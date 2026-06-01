@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\anytray.ico</ApplicationIcon>
+    <AssemblyName>AnyTray</AssemblyName>
+    <RootNamespace>AnyTray</RootNamespace>
+    <Version>1.0.0</Version>
+    <Authors>AnyTray</Authors>
+    <Product>AnyTray</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="H.NotifyIcon.Wpf" Version="2.1.3" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Логотип встраивается как ресурс — TrayService грузит его в иконку трея. -->
+    <Resource Include="Assets\anytray.ico" />
+  </ItemGroup>
+
+</Project>
