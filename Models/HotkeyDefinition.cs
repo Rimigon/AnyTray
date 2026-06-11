@@ -34,7 +34,9 @@ public sealed class HotkeyDefinition
         vk = (uint)KeyInterop.VirtualKeyFromKey(Key);
     }
 
-    public bool IsValid => Key != Key.None && Modifiers != ModifierKeys.None;
+    public bool IsValid => Key != Key.None
+        && Modifiers != ModifierKeys.None
+        && KeyInterop.VirtualKeyFromKey(Key) != 0;
 
     public override string ToString()
     {

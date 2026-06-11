@@ -22,3 +22,5 @@ tools/_preview.png
 # Local-only scripts (one-off maintainer helpers)
 tools/kill.ps1
 tools/set_lnk_icon.ps1
+publish/
+tools/_*.png

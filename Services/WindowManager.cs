@@ -32,6 +32,8 @@ public sealed class WindowManager : IWindowManager
         return w.ProcessId == OwnProcessId;
     }
 
+    public bool IsOwnWindow(int processId) => processId == OwnProcessId;
+
     public bool IsAlive(nint hwnd) => hwnd != 0 && IsWindow(hwnd);
 
     /// <summary>
@@ -50,7 +52,7 @@ public sealed class WindowManager : IWindowManager
         {
             var w = new Win32Window(hwnd);
             if (!w.IsValid || !w.IsVisible) return false;
-            if (IsOwnWindow(hwnd)) return false;
+            if (IsOwnWindow(w.ProcessId)) return false;
             if (w.HasStyle(WS_CHILD)) return false;
             if (w.HasExStyle(WS_EX_TOOLWINDOW)) return false;
             if (!w.IsRootOwner) return false;
@@ -88,21 +90,22 @@ public sealed class WindowManager : IWindowManager
 
             // Захватываем состояние ПЕРЕД скрытием.
             var placement = WINDOWPLACEMENT.CreateEmpty();
-            GetWindowPlacement(hwnd, ref placement);
+            if (!GetWindowPlacement(hwnd, ref placement))
+            {
+                Logger.Warn($"Не удалось получить placement окна (hwnd={hwnd}) перед скрытием.");
+                return false;
+            }
 
             int pid = w.ProcessId;
             string procName = TryGetProcessName(pid);
             string title = w.Title;
             var icon = IconHelper.GetWindowIcon(hwnd);
 
-            if (!ShowWindow(hwnd, SW_HIDE))
+            // ShowWindowAsync безопасен из другого потока/процесса (не блокирует при зависшем окне).
+            if (!ShowWindowAsync(hwnd, SW_HIDE))
             {
-                // ShowWindow вернул false, если окно уже было скрыто — проверяем фактическое состояние.
-                if (new Win32Window(hwnd).IsVisible)
-                {
-                    Logger.Warn($"Не удалось скрыть окно '{title}' (hwnd={hwnd}).");
-                    return false;
-                }
+                Logger.Warn($"Не удалось отправить команду скрытия окну '{title}' (hwnd={hwnd}).");
+                return false;
             }
 
             info = new HiddenWindowInfo
@@ -136,24 +139,37 @@ public sealed class WindowManager : IWindowManager
                 return false;
             }
 
-            // Снова делаем окно видимым.
-            ShowWindow(hwnd, SW_SHOW);
+            // Сначала гарантируем видимость (асинхронно, чтобы не блокировать при зависшем окне).
+            ShowWindowAsync(hwnd, SW_SHOW);
 
-            // Восстанавливаем точное положение/состояние. Если оригинал был свёрнут —
-            // показываем нормально, чтобы пользователь увидел окно.
+            // Восстанавливаем точное положение/состояние.
             var placement = info.OriginalPlacement;
-            if (placement.length == 0) placement.length = System.Runtime.InteropServices.Marshal.SizeOf<WINDOWPLACEMENT>();
+            if (placement.length == 0)
+                placement.length = System.Runtime.InteropServices.Marshal.SizeOf<WINDOWPLACEMENT>();
 
             if (placement.showCmd == SW_SHOWMINIMIZED)
                 placement.showCmd = SW_SHOWNORMAL;
 
-            SetWindowPlacement(hwnd, ref placement);
+            if (!SetWindowPlacement(hwnd, ref placement))
+                Logger.Warn($"Не удалось восстановить placement окна '{info.Title}' (hwnd={hwnd}).");
 
-            // Если по какой-то причине placement не сработал — гарантируем видимость.
+            // Если осталось свёрнутым — явно разворачиваем (асинхронно).
             if (new Win32Window(hwnd).IsMinimized)
-                ShowWindow(hwnd, SW_RESTORE);
+            {
+                if (!ShowWindowAsync(hwnd, SW_RESTORE))
+                    Logger.Warn($"Не удалось развернуть окно '{info.Title}' (hwnd={hwnd}).");
+            }
 
-            SetForegroundWindow(hwnd);
+            // Активируем окно. При UIPI (процесс админа, мы — нет) SetForegroundWindow
+            // вернёт false, поэтому пробуем BringWindowToTop + FlashWindow как fallback.
+            bool fg = SetForegroundWindow(hwnd);
+            if (!fg)
+            {
+                BringWindowToTop(hwnd);
+                FlashWindow(hwnd, false);
+                Logger.Warn($"UIPI: не удалось перевести '{info.Title}' на передний план (требуется elevate).");
+            }
+
             Logger.Info($"Восстановлено окно '{info.Title}' (hwnd={hwnd}).");
             return true;
         }

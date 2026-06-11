@@ -103,15 +103,21 @@ public sealed class SessionStateService : ISessionStateService
             var list = JsonSerializer.Deserialize<List<PersistedHiddenWindow>>(json, JsonOptions)
                        ?? new List<PersistedHiddenWindow>();
 
-            // Оставляем только реально существующие окна с совпадающим pid (защита от reuse hwnd).
             var alive = new List<PersistedHiddenWindow>();
             foreach (var item in list)
             {
-                nint hwnd = (nint)item.Hwnd;
-                if (!IsWindow(hwnd)) continue;
-                GetWindowThreadProcessId(hwnd, out uint pid);
-                if ((int)pid == item.ProcessId)
-                    alive.Add(item);
+                try
+                {
+                    nint hwnd = (nint)item.Hwnd;
+                    if (!IsWindow(hwnd)) continue;
+                    GetWindowThreadProcessId(hwnd, out uint pid);
+                    if ((int)pid == item.ProcessId)
+                        alive.Add(item);
+                }
+                catch
+                {
+                    // hwnd стал невалидным между IsWindow и GetWindowThreadProcessId — игнорируем
+                }
             }
             return alive;
         }

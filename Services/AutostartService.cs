@@ -28,7 +28,14 @@ public sealed class AutostartService : IAutostartService
         {
             using var key = Registry.CurrentUser.OpenSubKey(RunKey, writable: false);
             var value = key?.GetValue(ValueName) as string;
-            return !string.IsNullOrEmpty(value);
+            if (string.IsNullOrWhiteSpace(value)) return false;
+
+            var exe = ExePath;
+            if (string.IsNullOrEmpty(exe)) return false;
+
+            // Проверяем, что в реестре записан именно текущий .exe (с учётом кавычек и аргументов).
+            bool samePath = value.TrimStart('"').StartsWith(exe, StringComparison.OrdinalIgnoreCase);
+            return samePath;
         }
         catch (Exception ex)
         {
@@ -47,14 +54,23 @@ public sealed class AutostartService : IAutostartService
             if (enabled)
             {
                 var exe = ExePath;
-                if (!string.IsNullOrEmpty(exe))
-                    key.SetValue(ValueName, $"\"{exe}\" --autostart");
+                if (string.IsNullOrEmpty(exe)) return;
+
+                var newValue = $"\"{exe}\" --autostart";
+                var existing = key.GetValue(ValueName) as string;
+
+                if (string.IsNullOrWhiteSpace(existing) ||
+                    !existing.TrimStart('"').StartsWith(exe, StringComparison.OrdinalIgnoreCase))
+                {
+                    key.SetValue(ValueName, newValue);
+                    Logger.Info($"Автозапуск обновлён: {exe}");
+                }
             }
             else
             {
                 key.DeleteValue(ValueName, throwOnMissingValue: false);
+                Logger.Info("Автозапуск выключен.");
             }
-            Logger.Info($"Автозапуск: {(enabled ? "включён" : "выключен")}.");
         }
         catch (Exception ex)
         {

@@ -15,6 +15,7 @@ public partial class SettingsWindow : Window
         _vm = vm;
         DataContext = vm;
         _vm.CloseRequested += OnCloseRequested;
+        Closing += (_, _) => { _vm.CloseRequested -= OnCloseRequested; };
     }
 
     private void OnCloseRequested(bool saved)
@@ -24,10 +25,8 @@ public partial class SettingsWindow : Window
     }
 
     /// <summary>Захват сочетания клавиш в поле горячей клавиши.</summary>
-    private void HotkeyBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    private void HotkeyBox_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        e.Handled = true;
-
         var key = e.Key == Key.System ? e.SystemKey : e.Key;
 
         // Игнорируем нажатие одних только модификаторов.
@@ -38,6 +37,7 @@ public partial class SettingsWindow : Window
         var mods = Keyboard.Modifiers;
         if (mods == ModifierKeys.None) return; // требуем хотя бы один модификатор
 
+        e.Handled = true;
         _vm.Hotkey = new HotkeyDefinition(mods, key);
     }
 }

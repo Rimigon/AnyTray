@@ -1,11 +1,13 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.IO;
 using System.Windows;
-using System.Windows.Controls;
+using System.Windows.Forms;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using AnyTray.Infrastructure;
 using AnyTray.Models;
-using H.NotifyIcon;
 
 namespace AnyTray.Services;
 
@@ -27,13 +29,15 @@ public interface ITrayService : IDisposable
 }
 
 /// <summary>
-/// Tray-иконка (H.NotifyIcon) + динамическое контекстное меню со списком скрытых окон.
-/// Иконка рисуется средствами WPF (без бинарного .ico). Всё работает на UI-потоке.
+/// Tray-иконка через проверенный System.Windows.Forms.NotifyIcon.
+/// H.NotifyIcon.Wpf нестабилен на .NET 8 — нативный API работает надёжно.
 /// </summary>
 public sealed class TrayService : ITrayService
 {
-    private TaskbarIcon? _icon;
+    private NotifyIcon? _notifyIcon;
     private ObservableCollection<HiddenWindowInfo>? _hidden;
+    private DispatcherTimer? _menuRebuildTimer;
+    private bool _disposed;
 
     public Func<IReadOnlyList<OpenWindowInfo>>? OpenWindowsProvider { get; set; }
 
@@ -49,183 +53,234 @@ public sealed class TrayService : ITrayService
         _hidden = hidden;
         _hidden.CollectionChanged += OnHiddenChanged;
 
-        _icon = new TaskbarIcon
+        _menuRebuildTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher.CurrentDispatcher)
         {
-            ToolTipText = "AnyTray",
-            ContextMenu = BuildMenu()
+            Interval = TimeSpan.FromMilliseconds(80)
+        };
+        _menuRebuildTimer.Tick += (_, _) => { _menuRebuildTimer?.Stop(); RebuildMenu(); };
+
+        _notifyIcon = new NotifyIcon
+        {
+            Text = "AnyTray",
+            Visible = true,
+            ContextMenuStrip = BuildMenu()
         };
 
-        // Фирменный логотип из встроенного ресурса; при сбое — генерируемый глиф.
         var logo = LoadLogoIcon();
-        if (logo is not null)
-            _icon.Icon = logo;
-        else
-            _icon.IconSource = CreateFallbackIcon();
+        var fallback = CreateFallbackIcon();
+        _notifyIcon.Icon = logo ?? fallback;
+        Logger.Info($"Tray иконка: {(logo is not null ? "logo (AnyTray.ico)" : "fallback (generated)")}.");
 
-        // Двойной клик по иконке открывает настройки.
-        _icon.TrayMouseDoubleClick += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
-        _icon.ForceCreate();
+        _notifyIcon.MouseDoubleClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+                SettingsRequested?.Invoke(this, EventArgs.Empty);
+        };
 
         Logger.Info("TrayService инициализирован.");
+
+        // Тестовый balloon — если он появится, значит иконка создана (возможно, скрыта в overflow).
+        _notifyIcon.ShowBalloonTip(5000, "AnyTray", "Иконка в трее активна. Если вы это видите — всё работает!", ToolTipIcon.Info);
     }
 
     private void OnHiddenChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        if (_icon is not null)
+        if (_menuRebuildTimer is not null)
         {
-            _icon.ContextMenu = BuildMenu();
-            int count = _hidden?.Count ?? 0;
-            _icon.ToolTipText = count == 0 ? "AnyTray" : $"AnyTray — скрыто окон: {count}";
+            _menuRebuildTimer.Stop();
+            _menuRebuildTimer.Start();
         }
     }
 
-    private ContextMenu BuildMenu()
+    private void RebuildMenu()
     {
-        var menu = new ContextMenu();
-
-        menu.Items.Add(new MenuItem
+        if (_notifyIcon is not null && _hidden is not null)
         {
-            Header = "Скрыть активное окно",
-            Command = new RelayActionCommand(() => HideForegroundRequested?.Invoke(this, EventArgs.Empty))
-        });
+            _notifyIcon.ContextMenuStrip = BuildMenu();
+            int count = _hidden.Count;
+            _notifyIcon.Text = count == 0 ? "AnyTray" : $"AnyTray — скрыто окон: {count}";
+        }
+    }
 
-        // Подменю со списком ВСЕХ открытых окон — работает для любых приложений
-        // (в т.ч. без overlay-кнопки: Telegram, VS Code, Word). Наполняется при открытии.
-        var hideMenu = new MenuItem { Header = "Скрыть окно" };
-        hideMenu.Items.Add(new MenuItem { Header = "(наведите для загрузки…)", IsEnabled = false });
-        hideMenu.SubmenuOpened += (_, _) => PopulateHideSubmenu(hideMenu);
+    private ContextMenuStrip BuildMenu()
+    {
+        var menu = new ContextMenuStrip();
+
+        var hideActiveItem = new ToolStripMenuItem("Скрыть активное окно");
+        hideActiveItem.Click += (_, _) => HideForegroundRequested?.Invoke(this, EventArgs.Empty);
+        menu.Items.Add(hideActiveItem);
+
+        var hideMenu = new ToolStripMenuItem("Скрыть окно");
+        var loadingItem = new ToolStripMenuItem("(наведите для загрузки…)") { Enabled = false };
+        hideMenu.DropDownItems.Add(loadingItem);
+        hideMenu.DropDownOpening += (_, _) => PopulateHideSubmenu(hideMenu);
         menu.Items.Add(hideMenu);
 
-        menu.Items.Add(new Separator());
+        menu.Items.Add(new ToolStripSeparator());
 
         bool hasHidden = _hidden is { Count: > 0 };
 
-        var header = new MenuItem { Header = "Скрытые окна", IsEnabled = false };
+        var header = new ToolStripMenuItem("Скрытые окна") { Enabled = false };
         menu.Items.Add(header);
 
         if (hasHidden)
         {
             foreach (var info in _hidden!)
             {
-                var item = new MenuItem
-                {
-                    Header = info.DisplayName,
-                    Command = new RelayActionCommand(() => RestoreRequested?.Invoke(this, info))
-                };
-                if (info.Icon is not null)
-                    item.Icon = new Image { Source = info.Icon, Width = 16, Height = 16 };
+                var captured = info;
+                var item = new ToolStripMenuItem(captured.DisplayName);
+                item.Image = ToDrawingImage(captured.Icon);
+                item.Click += (_, _) => RestoreRequested?.Invoke(this, captured);
                 menu.Items.Add(item);
             }
         }
         else
         {
-            menu.Items.Add(new MenuItem { Header = "(пусто)", IsEnabled = false });
+            menu.Items.Add(new ToolStripMenuItem("(пусто)") { Enabled = false });
         }
 
-        menu.Items.Add(new Separator());
-        menu.Items.Add(new MenuItem
-        {
-            Header = "Восстановить все",
-            IsEnabled = hasHidden,
-            Command = new RelayActionCommand(() => RestoreAllRequested?.Invoke(this, EventArgs.Empty))
-        });
-        menu.Items.Add(new Separator());
-        menu.Items.Add(new MenuItem
-        {
-            Header = "Настройки…",
-            Command = new RelayActionCommand(() => SettingsRequested?.Invoke(this, EventArgs.Empty))
-        });
-        menu.Items.Add(new MenuItem
-        {
-            Header = "Выход",
-            Command = new RelayActionCommand(() => ExitRequested?.Invoke(this, EventArgs.Empty))
-        });
+        menu.Items.Add(new ToolStripSeparator());
+        var restoreAllItem = new ToolStripMenuItem("Восстановить все") { Enabled = hasHidden };
+        restoreAllItem.Click += (_, _) => RestoreAllRequested?.Invoke(this, EventArgs.Empty);
+        menu.Items.Add(restoreAllItem);
+        menu.Items.Add(new ToolStripSeparator());
+        var settingsItem = new ToolStripMenuItem("Настройки…");
+        settingsItem.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
+        menu.Items.Add(settingsItem);
+        var exitItem = new ToolStripMenuItem("Выход");
+        exitItem.Click += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
+        menu.Items.Add(exitItem);
 
         return menu;
     }
 
-    /// <summary>Перестраивает подменю «Скрыть окно ▸» актуальным списком открытых окон.</summary>
-    private void PopulateHideSubmenu(MenuItem hideMenu)
+    private void PopulateHideSubmenu(ToolStripMenuItem hideMenu)
     {
-        hideMenu.Items.Clear();
+        hideMenu.DropDownItems.Clear();
 
         var windows = OpenWindowsProvider?.Invoke() ?? Array.Empty<OpenWindowInfo>();
         if (windows.Count == 0)
         {
-            hideMenu.Items.Add(new MenuItem { Header = "(нет доступных окон)", IsEnabled = false });
+            hideMenu.DropDownItems.Add(new ToolStripMenuItem("(нет доступных окон)") { Enabled = false });
             return;
         }
 
         foreach (var win in windows)
         {
-            var hwnd = win.Hwnd;
-            var item = new MenuItem
-            {
-                Header = win.DisplayName,
-                Command = new RelayActionCommand(() => HideWindowRequested?.Invoke(this, hwnd))
-            };
-            if (win.Icon is not null)
-                item.Icon = new Image { Source = win.Icon, Width = 16, Height = 16 };
-            hideMenu.Items.Add(item);
+            var capturedHwnd = win.Hwnd;
+            var item = new ToolStripMenuItem(win.DisplayName);
+            item.Image = ToDrawingImage(win.Icon);
+            item.Click += (_, _) => HideWindowRequested?.Invoke(this, capturedHwnd);
+            hideMenu.DropDownItems.Add(item);
         }
     }
 
     public void ShowBalloon(string title, string message)
     {
-        try { _icon?.ShowNotification(title, message); }
-        catch (Exception ex) { Logger.Error("ShowBalloon ошибка.", ex); }
+        try
+        {
+            _notifyIcon?.ShowBalloonTip(3000, title, message, ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("ShowBalloon ошибка.", ex);
+        }
     }
 
-    /// <summary>Грузит фирменный логотип из встроенного ресурса в System.Drawing.Icon (для трея).</summary>
+    /// <summary>
+    /// Грузит фирменный логотип из встроенного ресурса как нативную System.Drawing.Icon.
+    /// Копирует stream в MemoryStream, чтобы Icon не зависел от жизни оригинального ресурса.
+    /// </summary>
     private static System.Drawing.Icon? LoadLogoIcon()
     {
         try
         {
-            var info = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/anytray.ico"));
+            var info = System.Windows.Application.GetResourceStream(new Uri("pack://application:,,,/Assets/anytray.ico"));
             if (info?.Stream is null) return null;
-            using var s = info.Stream;
-            return new System.Drawing.Icon(s, new System.Drawing.Size(32, 32));
+            using var src = info.Stream;
+            using var ms = new MemoryStream();
+            src.CopyTo(ms);
+            ms.Position = 0;
+            return new System.Drawing.Icon(ms);
         }
         catch (Exception ex)
         {
-            Logger.Error("Не удалось загрузить логотип трея — используется запасной глиф.", ex);
+            Logger.Error("Не удалось загрузить логотип трея — используется запасная иконка.", ex);
             return null;
         }
     }
 
-    /// <summary>Запасная иконка трея (если ресурс недоступен): стрелка вверх в изумрудно-циановом градиенте.</summary>
-    private static GeneratedIconSource CreateFallbackIcon() => new()
+    /// <summary>Запасная иконка трея (если ресурс недоступен): сгенерированная программно 32×32.</summary>
+    private static System.Drawing.Icon CreateFallbackIcon()
     {
-        Text = "↑",
-        Size = 64,
-        FontFamily = new FontFamily("Segoe UI Symbol"),
-        FontSize = 44,
-        FontWeight = FontWeights.Bold,
-        Foreground = new SolidColorBrush(Colors.White),
-        Background = new LinearGradientBrush(
-            new GradientStopCollection
+        try
+        {
+            using var bmp = new System.Drawing.Bitmap(32, 32);
+            using (var g = System.Drawing.Graphics.FromImage(bmp))
             {
-                new GradientStop(Color.FromRgb(0x10, 0xB9, 0x81), 0),  // emerald
-                new GradientStop(Color.FromRgb(0x06, 0xB4, 0xD4), 1),  // cyan
-            },
-            new System.Windows.Point(0, 0),
-            new System.Windows.Point(1, 1))
-    };
+                g.Clear(System.Drawing.Color.FromArgb(255, 8, 148, 178)); // teal
+                using var pen = new System.Drawing.Pen(System.Drawing.Color.White, 3);
+                g.DrawRectangle(pen, 4, 4, 23, 23);
+                // Внутренний крест/стрелка — символизирует «свернуть вниз»
+                using var pen2 = new System.Drawing.Pen(System.Drawing.Color.White, 2);
+                g.DrawLine(pen2, 16, 10, 16, 22);
+                g.DrawLine(pen2, 12, 18, 16, 22);
+                g.DrawLine(pen2, 20, 18, 16, 22);
+            }
+            nint hIcon = bmp.GetHicon();
+            try
+            {
+                using var temp = System.Drawing.Icon.FromHandle(hIcon);
+                return (System.Drawing.Icon)temp.Clone();
+            }
+            finally
+            {
+                Native.NativeMethods.DestroyIcon(hIcon);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Не удалось сгенерировать fallback-иконку трея — используется SystemIcons.Application.", ex);
+            return System.Drawing.SystemIcons.Application;
+        }
+    }
+
+    /// <summary>Преобразует WPF ImageSource в System.Drawing.Image для WinForms меню.</summary>
+    private static System.Drawing.Image? ToDrawingImage(ImageSource? source)
+    {
+        if (source == null) return null;
+        try
+        {
+            if (source is BitmapSource bmp)
+            {
+                using var ms = new MemoryStream();
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bmp));
+                encoder.Save(ms);
+                ms.Position = 0;
+                return System.Drawing.Image.FromStream(ms);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warn($"Не удалось конвертировать иконку для меню трея: {ex.Message}");
+        }
+        return null;
+    }
+
+    public void PrepareShutdown() => Dispose();
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         if (_hidden is not null) _hidden.CollectionChanged -= OnHiddenChanged;
-        _icon?.Dispose();
-        _icon = null;
+        _menuRebuildTimer?.Stop();
+        if (_notifyIcon is not null)
+        {
+            _notifyIcon.Visible = false;
+            _notifyIcon.Dispose();
+            _notifyIcon = null;
+        }
     }
-}
-
-/// <summary>Лёгкая ICommand-обёртка для пунктов меню (без зависимости от ViewModel-команд).</summary>
-internal sealed class RelayActionCommand : System.Windows.Input.ICommand
-{
-    private readonly Action _action;
-    public RelayActionCommand(Action action) => _action = action;
-    public event EventHandler? CanExecuteChanged { add { } remove { } }
-    public bool CanExecute(object? parameter) => true;
-    public void Execute(object? parameter) => _action();
 }

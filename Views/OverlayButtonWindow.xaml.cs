@@ -22,6 +22,8 @@ public partial class OverlayButtonWindow : Window
 
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
+        SourceInitialized -= OnSourceInitialized;
+
         var hwnd = new WindowInteropHelper(this).Handle;
         long ex = GetWindowLongPtr(hwnd, GWL_EXSTYLE).ToInt64();
         // TOOLWINDOW — вне Alt-Tab и панели задач; NOACTIVATE — клик не отбирает фокус у цели.

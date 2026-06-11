@@ -62,6 +62,7 @@ public sealed class OverlayButtonService : IOverlayButtonService
     private bool _enabled = true;
     private OverlayDisplayMode _mode = OverlayDisplayMode.AlwaysWhenForeground;
     private HashSet<string> _blacklist = new(StringComparer.OrdinalIgnoreCase);
+    private bool _disposed;
 
     public event EventHandler<nint>? HideRequested;
 
@@ -73,7 +74,7 @@ public sealed class OverlayButtonService : IOverlayButtonService
 
         _repositionTimer = new DispatcherTimer(DispatcherPriority.Render, _dispatcher)
         {
-            Interval = TimeSpan.FromMilliseconds(16)
+            Interval = TimeSpan.FromMilliseconds(33)
         };
         _repositionTimer.Tick += (_, _) => { _repositionTimer.Stop(); Reposition(); };
 
@@ -87,7 +88,9 @@ public sealed class OverlayButtonService : IOverlayButtonService
     public void ApplySettings(AppSettings settings)
     {
         _mode = settings.OverlayMode;
-        _blacklist = new HashSet<string>(settings.OverlayBlacklist, StringComparer.OrdinalIgnoreCase);
+        _blacklist = new HashSet<string>(
+            (settings.OverlayBlacklist?.Where(x => x is not null) ?? Array.Empty<string>()),
+            StringComparer.OrdinalIgnoreCase);
         _enabled = settings.OverlayEnabled;
 
         if (_enabled)
@@ -118,6 +121,15 @@ public sealed class OverlayButtonService : IOverlayButtonService
         _hookObject = SetWinEventHook(
             EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE,
             0, _winEventProc, 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+
+        if (_hookSystem == 0 || _hookObject == 0)
+        {
+            Logger.Error("SetWinEventHook не удался — overlay-функциональность недоступна.");
+            _running = false;
+            if (_hookSystem != 0) { UnhookWinEvent(_hookSystem); _hookSystem = 0; }
+            if (_hookObject != 0) { UnhookWinEvent(_hookObject); _hookObject = 0; }
+            return;
+        }
 
         Logger.Info("OverlayButtonService запущен (WinEvent-хуки установлены).");
         RetargetTo(GetForegroundWindow());
@@ -161,9 +173,17 @@ public sealed class OverlayButtonService : IOverlayButtonService
     private void WinEventCallback(nint hWinEventHook, uint eventType, nint hwnd,
         int idObject, int idChild, uint dwEventThread, uint dwmsEventTime)
     {
-        if (!_running || !_enabled) return;
+        if (_disposed || !_running || !_enabled) return;
         if (idObject != OBJID_WINDOW || idChild != CHILDID_SELF) return;
         if (hwnd == 0) return;
+
+        // Быстрый выход для объектных событий, не относящихся к текущей цели.
+        if (hwnd != _targetHwnd &&
+            (eventType == EVENT_OBJECT_LOCATIONCHANGE ||
+             eventType == EVENT_OBJECT_SHOW ||
+             eventType == EVENT_OBJECT_HIDE ||
+             eventType == EVENT_OBJECT_DESTROY))
+            return;
 
         switch (eventType)
         {
@@ -173,7 +193,10 @@ public sealed class OverlayButtonService : IOverlayButtonService
 
             case EVENT_OBJECT_LOCATIONCHANGE:
                 if (hwnd == _targetHwnd)
+                {
+                    _repositionTimer.Stop();
                     _repositionTimer.Start(); // дебаунс: перезапуск одноразового 16мс таймера
+                }
                 break;
 
             case EVENT_SYSTEM_MINIMIZESTART:
@@ -230,15 +253,27 @@ public sealed class OverlayButtonService : IOverlayButtonService
         }
 
         EnsureOverlay();
-        if (_overlayHwnd == 0) return;
+        if (_overlayHwnd == 0 || _overlay is null) return;
 
-        // Позиционируем в ФИЗИЧЕСКИХ пикселях — это убирает DIP-математику и решает мульти-монитор.
-        SetWindowPos(_overlayHwnd, HWND_TOPMOST,
-            rect.Left, rect.Top, rect.Width, rect.Height,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW);
+        // Обновляем размеры в DIP, чтобы WPF корректно отрендерил overlay на любом DPI.
+        double scale = DpiHelper.GetScaleForWindow(_targetHwnd);
+        if (scale <= 0) scale = 1.0;
+        _overlay.Width = rect.Width / scale;
+        _overlay.Height = rect.Height / scale;
+
+        // Позиционируем в ФИЗИЧЕСКИХ пикселях — убирает DIP-математику и решает мульти-монитор.
+        // Видимость контролируем ТОЛЬКО через WPF (_overlay.Visibility), а не через SWP_SHOWWINDOW.
+        if (!SetWindowPos(_overlayHwnd, HWND_TOPMOST,
+            rect.Left, rect.Top, 0, 0,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSIZE))
+        {
+            Logger.Warn($"SetWindowPos не удался для overlay (hwnd={_overlayHwnd}).");
+            HideOverlay();
+            return;
+        }
 
         if (_mode == OverlayDisplayMode.AlwaysWhenForeground)
-            _overlay!.Visibility = Visibility.Visible;
+            _overlay.Visibility = Visibility.Visible;
         else
             UpdateHoverVisibility(); // в hover-режиме видимость решает курсор
     }
@@ -360,7 +395,7 @@ public sealed class OverlayButtonService : IOverlayButtonService
     // ---------------------------------------------------------------
     private void EnsureOverlay()
     {
-        if (_overlay is not null) return;
+        if (_disposed || _overlay is not null) return;
 
         _overlay = new OverlayButtonWindow();
         _overlay.HideClicked += OnOverlayClicked;
@@ -377,7 +412,14 @@ public sealed class OverlayButtonService : IOverlayButtonService
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+
+        _repositionTimer.Stop();
+        _hoverTimer.Stop();
+
         Stop();
+        _targetHwnd = 0;
         if (_overlay is not null)
         {
             _overlay.HideClicked -= OnOverlayClicked;

@@ -50,6 +50,7 @@ public static class NativeConstants
     public const int HC_ACTION = 0;
     public const int WM_MBUTTONDOWN = 0x0207;
     public const int WM_MBUTTONUP = 0x0208;
+    public const int WM_MBUTTONDBLCLK = 0x0209;
 
     // WM_GETICON wParam
     public const int ICON_SMALL = 0;

@@ -31,6 +31,7 @@ public sealed class MouseHookService : IMouseHookService
     private readonly LowLevelMouseProc _proc; // держим живым для GC
     private nint _hook;
     private bool _enabled;
+    private bool _disposed;
 
     private nint _pendingHwnd; // окно, по заголовку которого нажали среднюю кнопку
 
@@ -45,7 +46,7 @@ public sealed class MouseHookService : IMouseHookService
 
     public void SetEnabled(bool enabled)
     {
-        if (enabled == _enabled) return;
+        if (_disposed || enabled == _enabled) return;
         _enabled = enabled;
         if (enabled) Install();
         else Uninstall();
@@ -53,12 +54,18 @@ public sealed class MouseHookService : IMouseHookService
 
     private void Install()
     {
-        if (_hook != 0) return;
-        _hook = SetWindowsHookEx(WH_MOUSE_LL, _proc, GetModuleHandle(null), 0);
+        if (_disposed || _hook != 0) return;
+        nint hMod = GetModuleHandle(null);
+        _hook = SetWindowsHookEx(WH_MOUSE_LL, _proc, hMod, 0);
         if (_hook == 0)
+        {
+            _enabled = false;
             Logger.Error($"Не удалось установить mouse-hook (код {Marshal.GetLastWin32Error()}).");
+        }
         else
+        {
             Logger.Info("MouseHookService: перехват среднего клика по заголовку включён.");
+        }
     }
 
     private void Uninstall()
@@ -72,10 +79,11 @@ public sealed class MouseHookService : IMouseHookService
 
     private nint HookProc(int nCode, nint wParam, nint lParam)
     {
-        // Быстрый выход для всех событий, кроме средней кнопки (колбэк зовётся на каждое движение!).
+        if (_disposed) return CallNextHookEx(_hook, nCode, wParam, lParam);
+
         if (nCode != HC_ACTION) return CallNextHookEx(_hook, nCode, wParam, lParam);
         int msg = (int)wParam;
-        if (msg != WM_MBUTTONDOWN && msg != WM_MBUTTONUP)
+        if (msg != WM_MBUTTONDOWN && msg != WM_MBUTTONUP && msg != WM_MBUTTONDBLCLK)
             return CallNextHookEx(_hook, nCode, wParam, lParam);
 
         try
@@ -83,7 +91,12 @@ public sealed class MouseHookService : IMouseHookService
             var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
             nint target = ResolveTitleBarWindow(data.pt);
 
-            if (msg == WM_MBUTTONDOWN)
+            if (msg == WM_MBUTTONDBLCLK)
+            {
+                if (target != 0)
+                    return 1; // подавляем двойной клик, чтобы приложение его не получило
+            }
+            else if (msg == WM_MBUTTONDOWN)
             {
                 if (target != 0)
                 {
@@ -97,9 +110,11 @@ public sealed class MouseHookService : IMouseHookService
                 {
                     var hwnd = _pendingHwnd;
                     _pendingHwnd = 0;
-                    // UI-действие выполняем асинхронно, чтобы не блокировать цепочку хуков.
-                    _dispatcher.BeginInvoke(() => TitleBarMiddleClick?.Invoke(this, hwnd));
-                    return 1; // подавляем отпускание
+                    if (hwnd == ResolveTitleBarWindow(data.pt))
+                    {
+                        _dispatcher.BeginInvoke(() => TitleBarMiddleClick?.Invoke(this, hwnd));
+                        return 1; // подавляем отпускание
+                    }
                 }
             }
         }
@@ -111,7 +126,6 @@ public sealed class MouseHookService : IMouseHookService
         return CallNextHookEx(_hook, nCode, wParam, lParam);
     }
 
-    /// <summary>Возвращает hwnd управляемого окна, если точка попала в его полосу заголовка; иначе 0.</summary>
     private nint ResolveTitleBarWindow(POINT pt)
     {
         nint child = WindowFromPoint(pt);
@@ -131,5 +145,10 @@ public sealed class MouseHookService : IMouseHookService
         return inTitle ? root : 0;
     }
 
-    public void Dispose() => Uninstall();
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        Uninstall();
+    }
 }

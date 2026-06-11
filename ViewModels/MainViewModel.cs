@@ -15,7 +15,7 @@ namespace AnyTray.ViewModels;
 /// «Мозг» приложения: владеет коллекцией скрытых окон и сценариями hide/restore,
 /// к которым сходятся все источники команд (hotkey, overlay-кнопка, tray-меню).
 /// </summary>
-public sealed class MainViewModel : ObservableObject
+public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private readonly IWindowManager _windowManager;
     private readonly ITrayService _tray;
@@ -26,6 +26,20 @@ public sealed class MainViewModel : ObservableObject
     private readonly IProcessWatcher _watcher;
     private readonly ISessionStateService _session;
     private readonly IMouseHookService _mouseHook;
+    private bool _disposed;
+    private HotkeyDefinition _currentHotkey = HotkeyDefinition.Default;
+
+    // Сохранённые делегаты для корректной отписки (lambda каждый раз создаёт новый instance).
+    private EventHandler? _trayHideForegroundHandler;
+    private EventHandler<nint>? _trayHideWindowHandler;
+    private EventHandler<HiddenWindowInfo>? _trayRestoreHandler;
+    private EventHandler? _trayRestoreAllHandler;
+    private EventHandler? _traySettingsHandler;
+    private EventHandler? _trayExitHandler;
+    private EventHandler<nint>? _overlayHideRequestedHandler;
+    private EventHandler<nint>? _watcherWindowGoneHandler;
+    private EventHandler<nint>? _mouseHookMiddleClickHandler;
+    private EventHandler<AppSettings>? _settingsChangedHandler;
 
     public ObservableCollection<HiddenWindowInfo> HiddenWindows { get; } = new();
 
@@ -65,27 +79,43 @@ public sealed class MainViewModel : ObservableObject
         // Tray
         _tray.Initialize(HiddenWindows);
         _tray.OpenWindowsProvider = GetHideableWindows;
-        _tray.HideForegroundRequested += (_, _) => HideActiveWindow();
-        _tray.HideWindowRequested += (_, hwnd) => HideWindow(hwnd);
-        _tray.RestoreRequested += (_, info) => Restore(info);
-        _tray.RestoreAllRequested += (_, _) => RestoreAll();
-        _tray.SettingsRequested += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
-        _tray.ExitRequested += (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
+
+        _trayHideForegroundHandler = (_, _) => HideActiveWindow();
+        _tray.HideForegroundRequested += _trayHideForegroundHandler;
+
+        _trayHideWindowHandler = (_, hwnd) => HideWindow(hwnd);
+        _tray.HideWindowRequested += _trayHideWindowHandler;
+
+        _trayRestoreHandler = (_, info) => Restore(info);
+        _tray.RestoreRequested += _trayRestoreHandler;
+
+        _trayRestoreAllHandler = (_, _) => RestoreAll();
+        _tray.RestoreAllRequested += _trayRestoreAllHandler;
+
+        _traySettingsHandler = (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
+        _tray.SettingsRequested += _traySettingsHandler;
+
+        _trayExitHandler = (_, _) => ExitRequested?.Invoke(this, EventArgs.Empty);
+        _tray.ExitRequested += _trayExitHandler;
 
         // Hotkey
         _hotkey.Initialize();
 
         // Overlay
-        _overlay.HideRequested += (_, hwnd) => HideWindow(hwnd);
+        _overlayHideRequestedHandler = (_, hwnd) => HideWindow(hwnd);
+        _overlay.HideRequested += _overlayHideRequestedHandler;
 
         // ProcessWatcher
-        _watcher.WindowGone += (_, hwnd) => OnWindowGone(hwnd);
+        _watcherWindowGoneHandler = (_, hwnd) => OnWindowGone(hwnd);
+        _watcher.WindowGone += _watcherWindowGoneHandler;
 
         // Средний клик по заголовку
-        _mouseHook.TitleBarMiddleClick += (_, hwnd) => OnTitleBarMiddleClick(hwnd);
+        _mouseHookMiddleClickHandler = (_, hwnd) => OnTitleBarMiddleClick(hwnd);
+        _mouseHook.TitleBarMiddleClick += _mouseHookMiddleClickHandler;
 
         // Settings
-        _settings.SettingsChanged += (_, s) => ApplySettings(s);
+        _settingsChangedHandler = (_, s) => ApplySettings(s);
+        _settings.SettingsChanged += _settingsChangedHandler;
 
         ApplySettings(_settings.Current);
         RecoverCrashedSession();
@@ -95,8 +125,24 @@ public sealed class MainViewModel : ObservableObject
     {
         // Горячая клавиша
         var def = s.GetHotkeyDefinition();
-        if (!_hotkey.Register(def, HideActiveWindow))
+        if (!def.IsValid)
+        {
+            Logger.Warn($"Пропускаем невалидную горячую клавишу '{s.Hotkey}'.");
+        }
+        else if (!_hotkey.Register(def, HideActiveWindow))
+        {
             _tray.ShowBalloon("AnyTray", $"Горячая клавиша {def} занята другим приложением.");
+            // Пытаемся восстановить предыдущую валидную горячую клавишу, если она отличалась.
+            if (_currentHotkey.IsValid && _currentHotkey.ToString() != def.ToString())
+            {
+                if (!_hotkey.Register(_currentHotkey, HideActiveWindow))
+                    Logger.Warn($"Не удалось восстановить предыдущую горячую клавишу {_currentHotkey}.");
+            }
+        }
+        else
+        {
+            _currentHotkey = def;
+        }
 
         // Overlay
         _overlay.ApplySettings(s);
@@ -166,12 +212,19 @@ public sealed class MainViewModel : ObservableObject
             if (string.IsNullOrWhiteSpace(title)) title = "(без заголовка)";
             if (title.Length > 60) title = title[..57] + "…";
 
-            result.Add(new OpenWindowInfo
+            try
             {
-                Hwnd = w.Handle,
-                DisplayName = $"{title}  —  {proc}",
-                Icon = IconHelper.GetWindowIcon(w.Handle)
-            });
+                result.Add(new OpenWindowInfo
+                {
+                    Hwnd = w.Handle,
+                    DisplayName = $"{title}  —  {proc}",
+                    Icon = IconHelper.GetWindowIcon(w.Handle)
+                });
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"Не удалось получить иконку окна '{title}' (hwnd={w.Handle}): {ex.Message}");
+            }
         }
 
         return result
@@ -185,8 +238,8 @@ public sealed class MainViewModel : ObservableObject
     public void Restore(HiddenWindowInfo info)
     {
         _windowManager.TryRestore(info); // даже при неудаче убираем из списка
+        try { _overlay.OnWindowRestored(info.Hwnd); } catch { }
         RemoveFromList(info.Hwnd);
-        _overlay.OnWindowRestored(info.Hwnd);
     }
 
     public void RestoreAll()
@@ -222,7 +275,7 @@ public sealed class MainViewModel : ObservableObject
         var orphans = _session.LoadOrphans();
         if (orphans.Count == 0) return;
 
-        var result = MessageBox.Show(
+        var result = System.Windows.MessageBox.Show(
             $"AnyTray обнаружил {orphans.Count} окно(окон), скрытых в прошлой сессии " +
             "(возможно, после аварийного завершения). Восстановить их сейчас?",
             "AnyTray — восстановление окон",
@@ -232,18 +285,59 @@ public sealed class MainViewModel : ObservableObject
         {
             foreach (var o in orphans)
             {
-                var info = new HiddenWindowInfo
+                try
                 {
-                    Hwnd = (nint)o.Hwnd,
-                    ProcessId = o.ProcessId,
-                    ProcessName = o.ProcessName,
-                    Title = o.Title,
-                    OriginalPlacement = o.Placement,
-                    HiddenAtUtc = DateTime.UtcNow
-                };
-                _windowManager.TryRestore(info);
+                    var info = new HiddenWindowInfo
+                    {
+                        Hwnd = (nint)o.Hwnd,
+                        ProcessId = o.ProcessId,
+                        ProcessName = o.ProcessName,
+                        Title = o.Title,
+                        OriginalPlacement = o.Placement,
+                        HiddenAtUtc = DateTime.UtcNow
+                    };
+                    _windowManager.TryRestore(info);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Ошибка восстановления осиротевшего окна '{o.Title}'.", ex);
+                }
             }
         }
+        else
+        {
+            // Пользователь отказался от автовосстановления — окна остаются скрытыми,
+            // но мы добавляем их в список, чтобы их можно было восстановить вручную через трей.
+            foreach (var o in orphans)
+            {
+                try
+                {
+                    var info = new HiddenWindowInfo
+                    {
+                        Hwnd = (nint)o.Hwnd,
+                        ProcessId = o.ProcessId,
+                        ProcessName = o.ProcessName,
+                        Title = o.Title,
+                        OriginalPlacement = o.Placement,
+                        HiddenAtUtc = DateTime.UtcNow
+                    };
+                    HiddenWindows.Add(info);
+                    _watcher.Watch(info);
+                    _overlay.OnWindowHidden(info.Hwnd);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Ошибка добавления осиротевшего окна '{o.Title}' в список.", ex);
+                }
+            }
+            _session.Persist(HiddenWindows);
+        }
+
+        if (orphans.Count > 0 && result != MessageBoxResult.Yes)
+        {
+            _tray.ShowBalloon("AnyTray", $"{orphans.Count} окно(окон) осталось скрытым. Нажмите на иконку трея, чтобы восстановить.");
+        }
+
         _session.Clear();
     }
 
@@ -253,7 +347,18 @@ public sealed class MainViewModel : ObservableObject
         try
         {
             foreach (var info in HiddenWindows.ToArray())
-                _windowManager.TryRestore(info);
+            {
+                try
+                {
+                    _windowManager.TryRestore(info);
+                    _watcher.Unwatch(info.Hwnd);
+                    _overlay.OnWindowRestored(info.Hwnd);
+                }
+                catch (Exception ex)
+                {
+                    Logger.Error($"Ошибка восстановления окна {info.Title} (hwnd={info.Hwnd}) при выходе.", ex);
+                }
+            }
             HiddenWindows.Clear();
             _session.Clear();
             Logger.Info("Все скрытые окна восстановлены при выходе.");
@@ -262,5 +367,33 @@ public sealed class MainViewModel : ObservableObject
         {
             Logger.Error("Ошибка восстановления окон при выходе.", ex);
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (_trayHideForegroundHandler is not null)
+            _tray.HideForegroundRequested -= _trayHideForegroundHandler;
+        if (_trayHideWindowHandler is not null)
+            _tray.HideWindowRequested -= _trayHideWindowHandler;
+        if (_trayRestoreHandler is not null)
+            _tray.RestoreRequested -= _trayRestoreHandler;
+        if (_trayRestoreAllHandler is not null)
+            _tray.RestoreAllRequested -= _trayRestoreAllHandler;
+        if (_traySettingsHandler is not null)
+            _tray.SettingsRequested -= _traySettingsHandler;
+        if (_trayExitHandler is not null)
+            _tray.ExitRequested -= _trayExitHandler;
+
+        if (_overlayHideRequestedHandler is not null)
+            _overlay.HideRequested -= _overlayHideRequestedHandler;
+        if (_watcherWindowGoneHandler is not null)
+            _watcher.WindowGone -= _watcherWindowGoneHandler;
+        if (_mouseHookMiddleClickHandler is not null)
+            _mouseHook.TitleBarMiddleClick -= _mouseHookMiddleClickHandler;
+        if (_settingsChangedHandler is not null)
+            _settings.SettingsChanged -= _settingsChangedHandler;
     }
 }

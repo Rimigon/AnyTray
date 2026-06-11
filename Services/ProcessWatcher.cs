@@ -25,7 +25,9 @@ public sealed class ProcessWatcher : IProcessWatcher
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _timer;
     private readonly Dictionary<nint, int> _watched = new();          // hwnd -> pid
+    private readonly Dictionary<int, int> _pidRefCount = new();       // pid -> count of watched windows
     private readonly Dictionary<int, Process> _processes = new();     // pid  -> Process (для Exited)
+    private bool _disposed;
 
     public event EventHandler<nint>? WindowGone;
 
@@ -41,7 +43,9 @@ public sealed class ProcessWatcher : IProcessWatcher
 
     public void Watch(HiddenWindowInfo info)
     {
+        if (_disposed) return;
         _watched[info.Hwnd] = info.ProcessId;
+        _pidRefCount[info.ProcessId] = _pidRefCount.GetValueOrDefault(info.ProcessId) + 1;
 
         if (!_processes.ContainsKey(info.ProcessId))
         {
@@ -64,11 +68,22 @@ public sealed class ProcessWatcher : IProcessWatcher
 
     public void Unwatch(nint hwnd)
     {
+        if (_disposed) return;
         if (!_watched.Remove(hwnd, out int pid)) return;
 
-        // Если для pid больше нет наблюдаемых окон — освобождаем Process.
-        if (!_watched.ContainsValue(pid) && _processes.Remove(pid, out var p))
+        // Уменьшаем счётчик ссылок на PID.
+        if (_pidRefCount.TryGetValue(pid, out int count))
         {
+            if (count <= 1)
+                _pidRefCount.Remove(pid);
+            else
+                _pidRefCount[pid] = count - 1;
+        }
+
+        // Если для pid больше нет наблюдаемых окон — освобождаем Process.
+        if (!_pidRefCount.ContainsKey(pid) && _processes.Remove(pid, out var p))
+        {
+            try { p.EnableRaisingEvents = false; } catch { }
             try { p.Dispose(); } catch { }
         }
 
@@ -77,21 +92,21 @@ public sealed class ProcessWatcher : IProcessWatcher
 
     private void Sweep()
     {
-        if (_watched.Count == 0) return;
+        if (_disposed || _watched.Count == 0) return;
 
-        // Снимок ключей, чтобы не мутировать словарь во время перебора.
-        foreach (var hwnd in _watched.Keys.ToArray())
+        // Снимок мёртвых окон — обработчики WindowGone могут вызвать Unwatch (мутирует _watched).
+        var dead = _watched.Keys.Where(hwnd => !IsWindow(hwnd)).ToArray();
+        foreach (var hwnd in dead)
         {
-            if (!IsWindow(hwnd))
-            {
-                Logger.Info($"Скрытое окно (hwnd={hwnd}) закрыто — удаляем из списка.");
-                WindowGone?.Invoke(this, hwnd);
-            }
+            Logger.Info($"Скрытое окно (hwnd={hwnd}) закрыто — удаляем из списка.");
+            WindowGone?.Invoke(this, hwnd);
         }
     }
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         _timer.Stop();
         foreach (var p in _processes.Values)
         {

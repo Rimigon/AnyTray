@@ -1,6 +1,8 @@
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using AnyTray.Infrastructure;
 using AnyTray.Native;
 using static AnyTray.Native.NativeConstants;
 using static AnyTray.Native.NativeMethods;
@@ -15,6 +17,7 @@ namespace AnyTray.Views;
 public partial class HideMenuWindow : Window
 {
     private readonly Action _onHide;
+    private bool _closing;
 
     public HideMenuWindow(string title, Action onHide)
     {
@@ -27,22 +30,51 @@ public partial class HideMenuWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        // Позиционируем верх-лево у курсора (в физических пикселях, без DIP-математики).
+        Loaded -= OnLoaded;
+
         var hwnd = new WindowInteropHelper(this).Handle;
         if (GetCursorPos(out POINT p))
         {
-            SetWindowPos(hwnd, HWND_TOPMOST, p.X, p.Y, 0, 0,
-                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            // Учитываем DPI и размеры окна, чтобы не вылезти за пределы экрана.
+            double scale = DpiHelper.GetScaleForWindow(hwnd);
+            int w = DpiHelper.DipToPixels(ActualWidth, scale);
+            int h = DpiHelper.DipToPixels(ActualHeight, scale);
+
+            nint mon = MonitorFromPoint(p, MONITOR_DEFAULTTONEAREST);
+            var mi = MONITORINFO.Create();
+            if (mon != 0 && GetMonitorInfo(mon, ref mi))
+            {
+                int left = Math.Max(mi.rcWork.Left, Math.Min(p.X, mi.rcWork.Right - w));
+                int top = Math.Max(mi.rcWork.Top, Math.Min(p.Y, mi.rcWork.Bottom - h));
+                SetWindowPos(hwnd, HWND_TOPMOST, left, top, 0, 0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
+            else
+            {
+                SetWindowPos(hwnd, HWND_TOPMOST, p.X, p.Y, 0, 0,
+                    SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+            }
         }
         Opacity = 1;       // показываем уже на нужном месте (без «прыжка»)
-        Activate();        // чтобы сработал Deactivated при клике мимо
 
-        // Подписываемся на Deactivated ТОЛЬКО после активации — иначе возможное
-        // дребезжание фокуса при показе закрыло бы меню сразу.
-        Deactivated += (_, _) => Close();
+        // Активацию и подписку на Deactivated откладываем в следующий кадр Dispatcher,
+        // иначе возможна гонка: событие активации/деактивации при загрузке вызовет Close()
+        // внутри обработчика Loaded, что приводит к InvalidOperationException.
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_closing) return;
+            Activate();        // чтобы сработал Deactivated при клике мимо
+            Deactivated += (_, _) => { if (!_closing) Close(); };
+        }), System.Windows.Threading.DispatcherPriority.Input);
     }
 
-    protected override void OnKeyDown(KeyEventArgs e)
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        _closing = true;
+        base.OnClosing(e);
+    }
+
+    protected override void OnKeyDown(System.Windows.Input.KeyEventArgs e)
     {
         base.OnKeyDown(e);
         if (e.Key == Key.Escape) Close();

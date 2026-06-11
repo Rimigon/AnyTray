@@ -35,7 +35,7 @@ public sealed class SettingsViewModel : ObservableObject
         _middleClickEnabled = s.TitleBarMiddleClickEnabled;
         _middleClickDirectHide = s.TitleBarMiddleClickDirectHide;
         _hotkey = s.GetHotkeyDefinition();
-        _blacklistText = string.Join(Environment.NewLine, s.OverlayBlacklist);
+        _blacklistText = string.Join(Environment.NewLine, s.OverlayBlacklist ?? new List<string>());
 
         SaveCommand = new RelayCommand(Save);
         CancelCommand = new RelayCommand(() => CloseRequested?.Invoke(false));
@@ -98,17 +98,15 @@ public sealed class SettingsViewModel : ObservableObject
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        var updated = new AppSettings
-        {
-            AutostartEnabled = _autostartEnabled,
-            OverlayEnabled = _overlayEnabled,
-            OverlayMode = _overlayHoverOnly ? OverlayDisplayMode.OnHoverOnly : OverlayDisplayMode.AlwaysWhenForeground,
-            Hotkey = _hotkey.ToString(),
-            OverlayBlacklist = blacklist,
-            TitleBarMiddleClickEnabled = _middleClickEnabled,
-            TitleBarMiddleClickDirectHide = _middleClickDirectHide,
-            SchemaVersion = _settings.Current.SchemaVersion
-        };
+        // Клонируем текущие настройки, чтобы сохранить неизвестные поля (от будущих версий).
+        var updated = _settings.Current.Clone();
+        updated.AutostartEnabled = _autostartEnabled;
+        updated.OverlayEnabled = _overlayEnabled;
+        updated.OverlayMode = _overlayHoverOnly ? OverlayDisplayMode.OnHoverOnly : OverlayDisplayMode.AlwaysWhenForeground;
+        updated.Hotkey = _hotkey.ToString();
+        updated.OverlayBlacklist = blacklist;
+        updated.TitleBarMiddleClickEnabled = _middleClickEnabled;
+        updated.TitleBarMiddleClickDirectHide = _middleClickDirectHide;
 
         _settings.Save(updated);
         CloseRequested?.Invoke(true);

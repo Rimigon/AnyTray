@@ -43,10 +43,12 @@ public sealed class SettingsService : ISettingsService
 
     public AppSettings Load()
     {
+        bool exists = false;
         try
         {
             Directory.CreateDirectory(_dir);
-            if (File.Exists(SettingsFilePath))
+            exists = File.Exists(SettingsFilePath);
+            if (exists)
             {
                 var json = File.ReadAllText(SettingsFilePath);
                 var loaded = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
@@ -62,15 +64,20 @@ public sealed class SettingsService : ISettingsService
             Logger.Error("Не удалось прочитать settings.json — используются значения по умолчанию.", ex);
         }
 
-        // Файл отсутствует/повреждён — defaults + перезапись.
         Current = new AppSettings();
-        Save(Current);
+        if (!exists)
+        {
+            // Файла не было — создаём дефолтный. Если файл был, но повреждён — не перезаписываем
+            // автоматически, чтобы не стереть данные пользователя; перезапишется при Save из UI.
+            Save(Current);
+        }
         return Current;
     }
 
     public void Save(AppSettings settings)
     {
         Current = settings;
+        bool success = false;
         try
         {
             Directory.CreateDirectory(_dir);
@@ -79,12 +86,14 @@ public sealed class SettingsService : ISettingsService
             File.WriteAllText(tmp, json);
             File.Move(tmp, SettingsFilePath, overwrite: true);
             Logger.Info("Настройки сохранены.");
+            success = true;
         }
         catch (Exception ex)
         {
             Logger.Error("Не удалось сохранить settings.json.", ex);
         }
 
-        SettingsChanged?.Invoke(this, settings);
+        if (success)
+            SettingsChanged?.Invoke(this, settings);
     }
 }

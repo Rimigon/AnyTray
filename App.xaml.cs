@@ -12,7 +12,7 @@ namespace AnyTray;
 /// Composition root: single-instance, сборка сервисов, жизненный цикл,
 /// гарантированное восстановление всех окон при выходе.
 /// </summary>
-public partial class App : Application
+public partial class App : System.Windows.Application
 {
     private SingleInstance? _single;
 
@@ -34,6 +34,9 @@ public partial class App : Application
     {
         base.OnStartup(e);
         Logger.Initialize();
+
+        bool autostart = e.Args.Contains("--autostart", StringComparer.OrdinalIgnoreCase);
+        if (autostart) Logger.Info("Запущено в режиме автозапуска.");
 
         // Один экземпляр на сессию.
         _single = new SingleInstance();
@@ -112,19 +115,40 @@ public partial class App : Application
         if (_shuttingDown) return;
         _shuttingDown = true;
 
-        // Безопасное восстановление всех скрытых окон ПЕРЕД выходом.
-        _mainVm?.RestoreAllOnExit();
-        Shutdown();
+        Logger.Info("Завершение работы по запросу пользователя...");
+        try { _mainVm?.RestoreAllOnExit(); }
+        catch (Exception ex) { Logger.Error("Ошибка восстановления окон при выходе.", ex); }
+        finally
+        {
+            _trayService?.PrepareShutdown(); // убираем иконку из трея ДО shutdown
+            _trayService = null;             // предотвращаем двойной Dispose в OnExit
+            Shutdown();
+        }
     }
 
     private void OnSessionEnding(object sender, SessionEndingEventArgs e)
     {
-        // Logoff / shutdown Windows — восстанавливаем окна, чтобы не остались невидимыми.
-        _mainVm?.RestoreAllOnExit();
+        if (_shuttingDown) return;
+        _shuttingDown = true;
+        try { _mainVm?.RestoreAllOnExit(); }
+        catch (Exception ex) { Logger.Error("Ошибка восстановления окон при завершении сессии.", ex); }
+        finally
+        {
+            _trayService?.PrepareShutdown();
+            _trayService = null;
+        }
     }
 
     private void OnUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
+        // Фатальные исключения нельзя глотать — приложение в неопределённом состоянии.
+        if (e.Exception is OutOfMemoryException or ThreadAbortException)
+        {
+            Logger.Error("Фатальное исключение в UI-потоке.", e.Exception);
+            e.Handled = false;
+            return;
+        }
+
         Logger.Error("Необработанное исключение в UI-потоке.", e.Exception);
         // Tray-приложение должно пережить нефатальную ошибку; состояние скрытых окон
         // персистится в hidden-session.json, поэтому при необходимости сработает crash-recovery.
@@ -136,13 +160,19 @@ public partial class App : Application
         try
         {
             SystemEvents.SessionEnding -= OnSessionEnding;
-            _mainVm?.RestoreAllOnExit();
+            // Если ExitApp/OnSessionEnding уже вызывали — избегаем двойного restore.
+            if (!_shuttingDown)
+            {
+                _mainVm?.RestoreAllOnExit();
+                _trayService?.PrepareShutdown();
+            }
+            _mainVm?.Dispose();
 
             _overlayService?.Dispose();
             _hotkeyService?.Dispose();
             _processWatcher?.Dispose();
             _mouseHookService?.Dispose();
-            _trayService?.Dispose();
+            _trayService?.Dispose();          // явно убираем иконку и отписываемся
             _single?.Dispose();
         }
         catch (Exception ex)

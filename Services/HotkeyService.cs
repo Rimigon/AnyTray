@@ -47,6 +47,12 @@ public sealed class HotkeyService : IHotkeyService
 
     public bool Register(HotkeyDefinition def, Action onPressed)
     {
+        if (!def.IsValid)
+        {
+            Logger.Warn("Попытка зарегистрировать невалидную горячую клавишу (нет модификаторов, клавиши или нет Virtual Key).");
+            return false;
+        }
+
         if (_source is null) Initialize();
         Unregister();
 
@@ -64,11 +70,19 @@ public sealed class HotkeyService : IHotkeyService
 
     public void Unregister()
     {
-        if (_registered && _hwnd != 0)
+        if (_registered)
         {
             UnregisterHotKey(_hwnd, HotkeyId);
             _registered = false;
         }
+    }
+
+    public void Dispose()
+    {
+        Unregister();
+        _source?.Dispose();
+        _source = null;
+        _hwnd = 0;
     }
 
     private nint WndProc(nint hwnd, int msg, nint wParam, nint lParam, ref bool handled)
@@ -80,14 +94,5 @@ public sealed class HotkeyService : IHotkeyService
             catch (Exception ex) { Logger.Error("Ошибка обработчика горячей клавиши.", ex); }
         }
         return 0;
-    }
-
-    public void Dispose()
-    {
-        Unregister();
-        _source?.RemoveHook(WndProc);
-        _source?.Dispose();
-        _source = null;
-        _hwnd = 0;
     }
 }

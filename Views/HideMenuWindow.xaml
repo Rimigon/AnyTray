@@ -9,7 +9,7 @@
         ResizeMode="NoResize"
         SizeToContent="WidthAndHeight"
         WindowStartupLocation="Manual"
-        ShowActivated="True"
+        ShowActivated="False"
         Opacity="0"
         UseLayoutRounding="True"
         FontSize="13">

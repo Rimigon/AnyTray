@@ -133,6 +133,13 @@ public static class NativeMethods
     [DllImport("user32.dll")]
     public static extern nint MonitorFromWindow(nint hwnd, int dwFlags);
 
+    [DllImport("user32.dll")]
+    public static extern nint MonitorFromPoint(POINT pt, int dwFlags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetMonitorInfo(nint hMonitor, ref MONITORINFO lpmi);
+
     // ===================================================================
     //  D. Иконки (опционально, для подменю трея)
     // ===================================================================
@@ -142,6 +149,10 @@ public static class NativeMethods
 
     [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")]
     public static extern nint GetClassLongPtr(nint hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DestroyIcon(nint hIcon);
 
     // ===================================================================
     //  E. WinEvent hook
@@ -177,8 +188,19 @@ public static class NativeMethods
     [DllImport("user32.dll")]
     public static extern nint CallNextHookEx(nint hhk, int nCode, nint wParam, nint lParam);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool BringWindowToTop(nint hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool FlashWindow(nint hwnd, [MarshalAs(UnmanagedType.Bool)] bool bInvert);
+
     [DllImport("user32.dll")]
     public static extern nint WindowFromPoint(POINT pt);
+
+    [DllImport("user32.dll")]
+    public static extern nint CopyIcon(nint hIcon);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern nint GetModuleHandle(string? lpModuleName);
