@@ -13,14 +13,13 @@ namespace AnyTray.ViewModels;
 
 /// <summary>
 /// «Мозг» приложения: владеет коллекцией скрытых окон и сценариями hide/restore,
-/// к которым сходятся все источники команд (hotkey, overlay-кнопка, tray-меню).
+/// к которым сходятся все источники команд (hotkey, средний клик по заголовку, tray-меню).
 /// </summary>
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private readonly IWindowManager _windowManager;
     private readonly ITrayService _tray;
     private readonly IHotkeyService _hotkey;
-    private readonly IOverlayButtonService _overlay;
     private readonly ISettingsService _settings;
     private readonly IAutostartService _autostart;
     private readonly IProcessWatcher _watcher;
@@ -36,7 +35,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private EventHandler? _trayRestoreAllHandler;
     private EventHandler? _traySettingsHandler;
     private EventHandler? _trayExitHandler;
-    private EventHandler<nint>? _overlayHideRequestedHandler;
     private EventHandler<nint>? _watcherWindowGoneHandler;
     private EventHandler<nint>? _mouseHookMiddleClickHandler;
     private EventHandler<AppSettings>? _settingsChangedHandler;
@@ -55,13 +53,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public MainViewModel(
         IWindowManager windowManager, ITrayService tray, IHotkeyService hotkey,
-        IOverlayButtonService overlay, ISettingsService settings, IAutostartService autostart,
+        ISettingsService settings, IAutostartService autostart,
         IProcessWatcher watcher, ISessionStateService session, IMouseHookService mouseHook)
     {
         _windowManager = windowManager;
         _tray = tray;
         _hotkey = hotkey;
-        _overlay = overlay;
         _settings = settings;
         _autostart = autostart;
         _watcher = watcher;
@@ -100,10 +97,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         // Hotkey
         _hotkey.Initialize();
-
-        // Overlay
-        _overlayHideRequestedHandler = (_, hwnd) => HideWindow(hwnd);
-        _overlay.HideRequested += _overlayHideRequestedHandler;
 
         // ProcessWatcher
         _watcherWindowGoneHandler = (_, hwnd) => OnWindowGone(hwnd);
@@ -144,9 +137,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             _currentHotkey = def;
         }
 
-        // Overlay
-        _overlay.ApplySettings(s);
-
         // Средний клик по заголовку
         _mouseHook.SetEnabled(s.TitleBarMiddleClickEnabled);
 
@@ -185,15 +175,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             HiddenWindows.Add(info);
             _watcher.Watch(info);
-            _overlay.OnWindowHidden(hwnd);
             _session.Persist(HiddenWindows);
         }
     }
 
     /// <summary>
     /// Список всех открытых окон, доступных для скрытия (для подменю «Скрыть окно ▸» в трее).
-    /// Работает для ЛЮБЫХ приложений, включая те, где overlay-кнопка не показывается
-    /// (Telegram, VS Code, Word). Уже скрытые окна исключаются.
+    /// Работает для ЛЮБЫХ приложений (Telegram, VS Code, Word). Уже скрытые окна исключаются.
     /// </summary>
     private IReadOnlyList<OpenWindowInfo> GetHideableWindows()
     {
@@ -238,7 +226,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public void Restore(HiddenWindowInfo info)
     {
         _windowManager.TryRestore(info); // даже при неудаче убираем из списка
-        try { _overlay.OnWindowRestored(info.Hwnd); } catch { }
         RemoveFromList(info.Hwnd);
     }
 
@@ -248,7 +235,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             _windowManager.TryRestore(info);
             _watcher.Unwatch(info.Hwnd);
-            _overlay.OnWindowRestored(info.Hwnd);
         }
         HiddenWindows.Clear();
         _session.Clear();
@@ -323,7 +309,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     };
                     HiddenWindows.Add(info);
                     _watcher.Watch(info);
-                    _overlay.OnWindowHidden(info.Hwnd);
                 }
                 catch (Exception ex)
                 {
@@ -352,7 +337,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 {
                     _windowManager.TryRestore(info);
                     _watcher.Unwatch(info.Hwnd);
-                    _overlay.OnWindowRestored(info.Hwnd);
                 }
                 catch (Exception ex)
                 {
@@ -387,8 +371,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (_trayExitHandler is not null)
             _tray.ExitRequested -= _trayExitHandler;
 
-        if (_overlayHideRequestedHandler is not null)
-            _overlay.HideRequested -= _overlayHideRequestedHandler;
         if (_watcherWindowGoneHandler is not null)
             _watcher.WindowGone -= _watcherWindowGoneHandler;
         if (_mouseHookMiddleClickHandler is not null)

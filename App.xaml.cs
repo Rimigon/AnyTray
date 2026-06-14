@@ -20,7 +20,6 @@ public partial class App : System.Windows.Application
     private WindowManager? _windowManager;
     private TrayService? _trayService;
     private HotkeyService? _hotkeyService;
-    private OverlayButtonService? _overlayService;
     private AutostartService? _autostartService;
     private ProcessWatcher? _processWatcher;
     private SessionStateService? _sessionService;
@@ -59,14 +58,13 @@ public partial class App : System.Windows.Application
         _windowManager = new WindowManager();
         _trayService = new TrayService();
         _hotkeyService = new HotkeyService();
-        _overlayService = new OverlayButtonService(dispatcher, _windowManager);
         _autostartService = new AutostartService();
         _processWatcher = new ProcessWatcher(dispatcher);
         _sessionService = new SessionStateService();
         _mouseHookService = new MouseHookService(_windowManager, dispatcher);
 
         _mainVm = new MainViewModel(
-            _windowManager, _trayService, _hotkeyService, _overlayService,
+            _windowManager, _trayService, _hotkeyService,
             _settingsService, _autostartService, _processWatcher, _sessionService, _mouseHookService);
 
         _mainVm.SettingsRequested += (_, _) => OpenSettings();
@@ -168,7 +166,6 @@ public partial class App : System.Windows.Application
             }
             _mainVm?.Dispose();
 
-            _overlayService?.Dispose();
             _hotkeyService?.Dispose();
             _processWatcher?.Dispose();
             _mouseHookService?.Dispose();

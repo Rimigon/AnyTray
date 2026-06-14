@@ -11,12 +11,9 @@ public sealed class SettingsViewModel : ObservableObject
     private readonly ISettingsService _settings;
 
     private bool _autostartEnabled;
-    private bool _overlayEnabled;
-    private bool _overlayHoverOnly;
     private bool _middleClickEnabled;
     private bool _middleClickDirectHide;
     private HotkeyDefinition _hotkey;
-    private string _blacklistText;
 
     public IRelayCommand SaveCommand { get; }
     public IRelayCommand CancelCommand { get; }
@@ -30,12 +27,9 @@ public sealed class SettingsViewModel : ObservableObject
         var s = settings.Current.Clone();
 
         _autostartEnabled = s.AutostartEnabled;
-        _overlayEnabled = s.OverlayEnabled;
-        _overlayHoverOnly = s.OverlayMode == OverlayDisplayMode.OnHoverOnly;
         _middleClickEnabled = s.TitleBarMiddleClickEnabled;
         _middleClickDirectHide = s.TitleBarMiddleClickDirectHide;
         _hotkey = s.GetHotkeyDefinition();
-        _blacklistText = string.Join(Environment.NewLine, s.OverlayBlacklist ?? new List<string>());
 
         SaveCommand = new RelayCommand(Save);
         CancelCommand = new RelayCommand(() => CloseRequested?.Invoke(false));
@@ -45,18 +39,6 @@ public sealed class SettingsViewModel : ObservableObject
     {
         get => _autostartEnabled;
         set => SetProperty(ref _autostartEnabled, value);
-    }
-
-    public bool OverlayEnabled
-    {
-        get => _overlayEnabled;
-        set => SetProperty(ref _overlayEnabled, value);
-    }
-
-    public bool OverlayHoverOnly
-    {
-        get => _overlayHoverOnly;
-        set => SetProperty(ref _overlayHoverOnly, value);
     }
 
     public bool MiddleClickEnabled
@@ -83,28 +65,12 @@ public sealed class SettingsViewModel : ObservableObject
 
     public string HotkeyDisplay => _hotkey.ToString();
 
-    public string BlacklistText
-    {
-        get => _blacklistText;
-        set => SetProperty(ref _blacklistText, value);
-    }
-
     private void Save()
     {
-        var blacklist = _blacklistText
-            .Split(new[] { '\r', '\n', ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Select(x => x.Replace(".exe", "", StringComparison.OrdinalIgnoreCase).Trim())
-            .Where(x => x.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
         // Клонируем текущие настройки, чтобы сохранить неизвестные поля (от будущих версий).
         var updated = _settings.Current.Clone();
         updated.AutostartEnabled = _autostartEnabled;
-        updated.OverlayEnabled = _overlayEnabled;
-        updated.OverlayMode = _overlayHoverOnly ? OverlayDisplayMode.OnHoverOnly : OverlayDisplayMode.AlwaysWhenForeground;
         updated.Hotkey = _hotkey.ToString();
-        updated.OverlayBlacklist = blacklist;
         updated.TitleBarMiddleClickEnabled = _middleClickEnabled;
         updated.TitleBarMiddleClickDirectHide = _middleClickDirectHide;
 

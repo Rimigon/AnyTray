@@ -1,5 +1,3 @@
-using System.Text.Json.Serialization;
-
 namespace AnyTray.Models;
 
 /// <summary>Настройки приложения. Сериализуются в %APPDATA%\AnyTray\settings.json.</summary>
@@ -9,14 +7,6 @@ public sealed class AppSettings
 
     /// <summary>Сериализованная горячая клавиша (см. <see cref="HotkeyDefinition"/>).</summary>
     public string Hotkey { get; set; } = "Ctrl+Alt+H";
-
-    public bool OverlayEnabled { get; set; } = true;
-
-    [JsonConverter(typeof(JsonStringEnumConverter))]
-    public OverlayDisplayMode OverlayMode { get; set; } = OverlayDisplayMode.AlwaysWhenForeground;
-
-    /// <summary>Имена процессов (без .exe, lower-case), для которых overlay не показывается.</summary>
-    public List<string> OverlayBlacklist { get; set; } = new();
 
     /// <summary>Скрывать окно средним кликом по его заголовку (работает на всех приложениях).</summary>
     public bool TitleBarMiddleClickEnabled { get; set; } = true;
@@ -33,9 +23,6 @@ public sealed class AppSettings
     {
         AutostartEnabled = AutostartEnabled,
         Hotkey = Hotkey,
-        OverlayEnabled = OverlayEnabled,
-        OverlayMode = OverlayMode,
-        OverlayBlacklist = new List<string>(OverlayBlacklist),
         TitleBarMiddleClickEnabled = TitleBarMiddleClickEnabled,
         TitleBarMiddleClickDirectHide = TitleBarMiddleClickDirectHide,
         SchemaVersion = SchemaVersion
