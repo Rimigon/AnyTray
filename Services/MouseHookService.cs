@@ -89,6 +89,11 @@ public sealed class MouseHookService : IMouseHookService
         try
         {
             var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+
+            // Синтетические (инжектированные) события не перехватываем — пусть проходят как есть.
+            if ((data.flags & LLMHF_INJECTED) != 0)
+                return CallNextHookEx(_hook, nCode, wParam, lParam);
+
             nint target = ResolveTitleBarWindow(data.pt);
 
             if (msg == WM_MBUTTONDBLCLK)
@@ -110,11 +115,11 @@ public sealed class MouseHookService : IMouseHookService
                 {
                     var hwnd = _pendingHwnd;
                     _pendingHwnd = 0;
+                    // Всегда подавляем отпускание, т.к. нажатие уже было подавлено —
+                    // иначе приложение получит orphan MBUTTONUP без предшествующего MBUTTONDOWN.
                     if (hwnd == ResolveTitleBarWindow(data.pt))
-                    {
                         _dispatcher.BeginInvoke(() => TitleBarMiddleClick?.Invoke(this, hwnd));
-                        return 1; // подавляем отпускание
-                    }
+                    return 1;
                 }
             }
         }
@@ -132,7 +137,7 @@ public sealed class MouseHookService : IMouseHookService
         if (child == 0) return 0;
 
         nint root = GetAncestor(child, GA_ROOT);
-        if (root == 0 || !_windowManager.IsManageableWindow(root)) return 0;
+        if (root == 0 || !_windowManager.CanManageWindow(root)) return 0;
 
         var w = new Win32Window(root);
         if (!w.TryGetExtendedFrameBounds(out RECT fr)) return 0;

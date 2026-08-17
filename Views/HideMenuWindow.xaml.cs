@@ -25,6 +25,11 @@ public partial class HideMenuWindow : Window
         _onHide = onHide;
         TitleText.Text = title;
 
+        // Окно показывается активным (ShowActivated по умолчанию = True), поэтому подписку на
+        // Deactivated вешаем сразу в конструкторе — клик мимо закроет меню надёжно, без гонки
+        // с моментом Show/Activate. _closing страхует от повторного Close во время закрытия.
+        Deactivated += (_, _) => { if (!_closing) Close(); };
+
         Loaded += OnLoaded;
     }
 
@@ -56,16 +61,6 @@ public partial class HideMenuWindow : Window
             }
         }
         Opacity = 1;       // показываем уже на нужном месте (без «прыжка»)
-
-        // Активацию и подписку на Deactivated откладываем в следующий кадр Dispatcher,
-        // иначе возможна гонка: событие активации/деактивации при загрузке вызовет Close()
-        // внутри обработчика Loaded, что приводит к InvalidOperationException.
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (_closing) return;
-            Activate();        // чтобы сработал Deactivated при клике мимо
-            Deactivated += (_, _) => { if (!_closing) Close(); };
-        }), System.Windows.Threading.DispatcherPriority.Input);
     }
 
     protected override void OnClosing(CancelEventArgs e)

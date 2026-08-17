@@ -11,6 +11,8 @@ public static class Logger
     private static readonly object _lock = new();
     private static string _logFile = string.Empty;
     private const long MaxSizeBytes = 1_000_000; // ~1 МБ, затем простая ротация
+    private const int RotateCheckEveryWrites = 64; // не дёргать FileInfo на каждой строке
+    private static int _writesSinceRotateCheck;
 
     public static void Initialize()
     {
@@ -42,7 +44,11 @@ public static class Logger
         {
             lock (_lock)
             {
-                Rotate();
+                if (++_writesSinceRotateCheck >= RotateCheckEveryWrites)
+                {
+                    _writesSinceRotateCheck = 0;
+                    Rotate();
+                }
                 var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff} [{level}] {message}{Environment.NewLine}";
                 File.AppendAllText(_logFile, line);
             }

@@ -28,6 +28,7 @@ public partial class App : System.Windows.Application
 
     private SettingsWindow? _settingsWindow;
     private bool _shuttingDown;
+    private bool _uiErrorNotified; // чтобы не спамить балунами при повторяющихся исключениях
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -71,6 +72,7 @@ public partial class App : System.Windows.Application
         _mainVm.ExitRequested += (_, _) => ExitApp();
         _mainVm.HideMenuRequested += (_, hwnd) => ShowHideMenu(hwnd);
 
+        _mainVm.AutostartMode = autostart;
         _mainVm.Initialize();
 
         Logger.Info("AnyTray готов к работе (в трее).");
@@ -134,6 +136,9 @@ public partial class App : System.Windows.Application
         {
             _trayService?.PrepareShutdown();
             _trayService = null;
+            // Явно запускаем штатный выход — иначе WPF будет ждать, пока сессию убьёт ОС,
+            // и OnExit (dispose сервисов/логирование) не отработает чисто.
+            Shutdown();
         }
     }
 
@@ -150,6 +155,13 @@ public partial class App : System.Windows.Application
         Logger.Error("Необработанное исключение в UI-потоке.", e.Exception);
         // Tray-приложение должно пережить нефатальную ошибку; состояние скрытых окон
         // персистится в hidden-session.json, поэтому при необходимости сработает crash-recovery.
+        // Однократно уведомляем пользователя — молча «глотать» баги небезопасно для диагностики.
+        if (!_uiErrorNotified)
+        {
+            _uiErrorNotified = true;
+            try { _trayService?.ShowBalloon("AnyTray", "Произошла внутренняя ошибка — записано в лог. Скрытые окна в безопасности."); }
+            catch { /* уведомление не должно ронять обработчик */ }
+        }
         e.Handled = true;
     }
 

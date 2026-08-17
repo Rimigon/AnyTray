@@ -11,6 +11,12 @@ public interface IWindowManager
 {
     int OwnProcessId { get; }
     bool IsManageableWindow(nint hwnd);
+    /// <summary>
+    /// Окно управляемо И мы можем послать в него сообщение (нет блокировки UIPI).
+    /// Используется перед подавлением среднего клика — не едим клик по окну, которое всё равно
+    /// не сможем скрыть (например, elevated-окно при непривилегированном AnyTray).
+    /// </summary>
+    bool CanManageWindow(nint hwnd);
     IReadOnlyList<Win32Window> EnumerateManageableTopLevelWindows();
     bool TryHide(nint hwnd, out HiddenWindowInfo? info);
     bool TryRestore(HiddenWindowInfo info);
@@ -38,13 +44,18 @@ public sealed class WindowManager : IWindowManager
 
     /// <summary>
     /// Окно пригодно к скрытию, если это нормальное верхнеуровневое окно приложения:
-    /// валидно и видимо; не дочернее (нет WS_CHILD); нет WS_EX_TOOLWINDOW; корневое окно
-    /// (GA_ROOTOWNER == self); не cloaked (DWM); есть непустой заголовок; не наш процесс.
+    /// валидно и видимо; не дочернее (нет WS_CHILD); нет WS_EX_TOOLWINDOW; не cloaked (DWM);
+    /// есть непустой заголовок; не наш процесс.
+    ///
+    /// Окна с владельцем (owned) разрешены — но только если владелец не отключён.
+    /// Если owner disabled — это модальный диалог: его скрытие оставит owner замороженным
+    /// (модальный цикл не завершился), и приложение будет выглядеть зависшим. Поэтому
+    /// модальные диалоги отсекаются, а немодальные owned-окна (панели инструментов,
+    /// окна «Найти…» без модальности) скрывать можно.
     ///
     /// Стили заголовка (WS_CAPTION/WS_SYSMENU) НЕ требуются намеренно: многие приложения с
     /// кастомным/безрамочным заголовком (Telegram, VS Code, Electron/Qt) их не выставляют,
-    /// но скрывать их по горячей клавише нужно. Возможность ПОКАЗАТЬ overlay-кнопку
-    /// определяется отдельно — по реальным границам системных кнопок заголовка.
+    /// но скрывать их по горячей клавише нужно.
     /// </summary>
     public bool IsManageableWindow(nint hwnd)
     {
@@ -55,9 +66,14 @@ public sealed class WindowManager : IWindowManager
             if (IsOwnWindow(w.ProcessId)) return false;
             if (w.HasStyle(WS_CHILD)) return false;
             if (w.HasExStyle(WS_EX_TOOLWINDOW)) return false;
-            if (!w.IsRootOwner) return false;
             if (w.IsCloaked) return false;
             if (string.IsNullOrWhiteSpace(w.Title)) return false;
+
+            // Окно с владельцем: скрываем, только если owner не отключён (не модальный диалог).
+            var rootOwner = GetAncestor(hwnd, GA_ROOTOWNER);
+            if (rootOwner != 0 && rootOwner != hwnd && !IsWindowEnabled(rootOwner))
+                return false;
+
             return true;
         }
         catch (Exception ex)
@@ -65,6 +81,18 @@ public sealed class WindowManager : IWindowManager
             Logger.Error($"IsManageableWindow({hwnd}) ошибка.", ex);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Окно пригодно к скрытию И доступно нам по UIPI. PostMessage(WM_NULL) — no-op,
+    /// возвращает false, если целевое окно выше по integrity level ( elevated-процесс,
+    /// а мы — нет). Это дешёвая проверка перед тем, как подавлять средний клик.
+    /// </summary>
+    public bool CanManageWindow(nint hwnd)
+    {
+        if (!IsManageableWindow(hwnd)) return false;
+        try { return PostMessage(hwnd, WM_NULL, 0, 0); }
+        catch { return false; }
     }
 
     public IReadOnlyList<Win32Window> EnumerateManageableTopLevelWindows()

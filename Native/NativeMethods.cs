@@ -29,6 +29,10 @@ public static class NativeMethods
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindowEnabled(nint hWnd);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsIconic(nint hWnd);
 
     [DllImport("user32.dll")]
@@ -81,21 +85,11 @@ public static class NativeMethods
     public static extern uint GetWindowThreadProcessId(nint hWnd, out uint lpdwProcessId);
 
     [DllImport("user32.dll")]
-    public static extern int GetSystemMetrics(int nIndex);
-
-    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetCursorPos(out POINT lpPoint);
 
     [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ClientToScreen(nint hWnd, ref POINT lpPoint);
-
-    [DllImport("user32.dll")]
     public static extern nint GetAncestor(nint hWnd, uint gaFlags);
-
-    [DllImport("user32.dll")]
-    public static extern nint GetWindow(nint hWnd, uint uCmd);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -144,8 +138,13 @@ public static class NativeMethods
     //  D. Иконки (опционально, для подменю трея)
     // ===================================================================
 
-    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SendMessageW")]
-    public static extern nint SendMessage(nint hWnd, uint Msg, nint wParam, nint lParam);
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "SendMessageTimeoutW")]
+    public static extern nint SendMessageTimeout(nint hWnd, uint Msg, nint wParam, nint lParam,
+        uint fuFlags, uint uTimeout, out nint lpdwResult);
+
+    [DllImport("user32.dll", SetLastError = true, EntryPoint = "PostMessageW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(nint hWnd, uint Msg, nint wParam, nint lParam);
 
     [DllImport("user32.dll", EntryPoint = "GetClassLongPtrW")]
     public static extern nint GetClassLongPtr(nint hWnd, int nIndex);
@@ -155,25 +154,7 @@ public static class NativeMethods
     public static extern bool DestroyIcon(nint hIcon);
 
     // ===================================================================
-    //  E. WinEvent hook
-    // ===================================================================
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    public delegate void WinEventProc(
-        nint hWinEventHook, uint eventType, nint hwnd,
-        int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    public static extern nint SetWinEventHook(
-        uint eventMin, uint eventMax, nint hmodWinEventProc,
-        WinEventProc lpfnWinEventProc, uint idProcess, uint idThread, uint dwFlags);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool UnhookWinEvent(nint hWinEventHook);
-
-    // ===================================================================
-    //  G. Low-level mouse hook (WH_MOUSE_LL) — без инжекта, в нашем процессе
+    //  F. Low-level mouse hook (WH_MOUSE_LL) — без инжекта, в нашем процессе
     // ===================================================================
 
     public delegate nint LowLevelMouseProc(int nCode, nint wParam, nint lParam);

@@ -36,6 +36,7 @@ public sealed class HotkeyDefinition
 
     public bool IsValid => Key != Key.None
         && Modifiers != ModifierKeys.None
+        && Modifiers != ModifierKeys.Windows // чистый Win+клавиша перехватывает шорткаты ОС — запрещаем
         && KeyInterop.VirtualKeyFromKey(Key) != 0;
 
     public override string ToString()
@@ -77,7 +78,7 @@ public sealed class HotkeyDefinition
             }
         }
 
-        if (key == Key.None) return false;
+        if (key == Key.None || mods == ModifierKeys.None || mods == ModifierKeys.Windows) return false;
         result = new HotkeyDefinition(mods, key);
         return true;
     }

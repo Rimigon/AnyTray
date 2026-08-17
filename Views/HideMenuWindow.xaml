@@ -9,7 +9,6 @@
         ResizeMode="NoResize"
         SizeToContent="WidthAndHeight"
         WindowStartupLocation="Manual"
-        ShowActivated="False"
         Opacity="0"
         UseLayoutRounding="True"
         FontSize="13">
@@ -31,10 +30,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bg" Property="Background" Value="#1A10B981" />
+                                <Setter TargetName="Bg" Property="Background" Value="#1A1E3A8A" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Bg" Property="Background" Value="#3310B981" />
+                                <Setter TargetName="Bg" Property="Background" Value="#331E3A8A" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -57,9 +56,9 @@
             <Button x:Name="HideButton" Style="{StaticResource MenuItemButton}" Click="HideButton_Click">
                 <StackPanel Orientation="Horizontal">
                     <Viewbox Width="16" Height="16" Margin="0,0,10,0">
-                        <Path Stroke="#FF10B981" StrokeThickness="1.9"
+                        <Path Stroke="#FF1E3A8A" StrokeThickness="1.9"
                               StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
-                              Data="M8,2.5 L8,9 M8,2.5 L4.5,6 M8,2.5 L11.5,6 M4,13 L12,13" />
+                              Data="M5.5,2.5 L5.5,10.5 M5.5,10.5 L2.5,6.5 M5.5,10.5 L8.5,6.5 M10.5,2.5 L10.5,10.5 M10.5,10.5 L7.5,6.5 M10.5,10.5 L13.5,6.5" />
                     </Viewbox>
                     <TextBlock Text="Свернуть в трей" VerticalAlignment="Center" />
                 </StackPanel>

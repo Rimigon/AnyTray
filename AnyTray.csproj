@@ -10,6 +10,7 @@
     <LangVersion>latest</LangVersion>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\anytray.ico</ApplicationIcon>
     <AssemblyName>AnyTray</AssemblyName>
@@ -20,13 +21,30 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- Тестовый проект живёт в подпапке — исключаем его файлы из glob'а главного проекта. -->
   <ItemGroup>
-    <!-- Логотип встраивается как ресурс — TrayService грузит его в иконку трея. -->
+    <Compile Remove="AnyTray.Tests\**" />
+    <None Remove="AnyTray.Tests\**" />
+    <EmbeddedResource Remove="AnyTray.Tests\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- anytray.svg — единый векторный источник всех иконок. -->
+    <None Include="Assets\anytray.svg" />
+    <!-- anytray.ico — мультиразмерная иконка для исполняемого файла и системного трея. -->
     <Resource Include="Assets\anytray.ico" />
+    <!-- PNG-логотипы используются напрямую в WPF-окне и в NotifyIcon (через конвертацию в Icon). -->
+    <Resource Include="Assets\anytray.png" />
+    <Resource Include="Assets\anytray-16x16.png" />
+    <Resource Include="Assets\anytray-24x24.png" />
+    <Resource Include="Assets\anytray-32x32.png" />
+    <Resource Include="Assets\anytray-48x48.png" />
+    <Resource Include="Assets\anytray-64x64.png" />
+    <Resource Include="Assets\anytray-128x128.png" />
   </ItemGroup>
 
 </Project>

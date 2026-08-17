@@ -16,6 +16,21 @@ public sealed class AppSettings
 
     public int SchemaVersion { get; set; } = 1;
 
+    /// <summary>Текущая версия схемы настроек. При росте — добавлять шаги миграции в <see cref="Migrate"/>.</summary>
+    public const int CurrentSchemaVersion = 1;
+
+    /// <summary>
+    /// Приводит загруженные настройки к актуальной схеме. Сейчас схема v1 — миграций нет,
+    /// но точка расширения готова: добавляйте сюда шаги при изменении полей.
+    /// </summary>
+    public void Migrate()
+    {
+        // Пример структуры на будущее:
+        // if (SchemaVersion < 2) { /* перенести/переименовать поля */ SchemaVersion = 2; }
+        if (SchemaVersion < CurrentSchemaVersion)
+            SchemaVersion = CurrentSchemaVersion;
+    }
+
     public HotkeyDefinition GetHotkeyDefinition()
         => HotkeyDefinition.TryParse(Hotkey, out var def) ? def : HotkeyDefinition.Default;
 

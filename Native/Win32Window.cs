@@ -111,18 +111,4 @@ public readonly struct Win32Window
             return false;
         }
     }
-
-    public bool TryGetCaptionButtonBounds(out RECT rect)
-    {
-        try
-        {
-            int hr = DwmGetWindowAttribute(Handle, DWMWA_CAPTION_BUTTON_BOUNDS, out rect, System.Runtime.InteropServices.Marshal.SizeOf<RECT>());
-            return hr == S_OK && rect.Width > 0 && rect.Height > 0;
-        }
-        catch
-        {
-            rect = default;
-            return false;
-        }
-    }
 }

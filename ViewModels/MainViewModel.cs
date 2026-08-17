@@ -28,8 +28,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _disposed;
     private HotkeyDefinition _currentHotkey = HotkeyDefinition.Default;
 
+    /// <summary>true — приложение запущено в режиме автозапуска (--autostart):
+    /// не показываем модальные диалоги и не тревожим пользователя при старте.</summary>
+    public bool AutostartMode { get; set; }
+
     // Сохранённые делегаты для корректной отписки (lambda каждый раз создаёт новый instance).
-    private EventHandler? _trayHideForegroundHandler;
+    private EventHandler<nint>? _trayHideForegroundHandler;
     private EventHandler<nint>? _trayHideWindowHandler;
     private EventHandler<HiddenWindowInfo>? _trayRestoreHandler;
     private EventHandler? _trayRestoreAllHandler;
@@ -77,7 +81,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _tray.Initialize(HiddenWindows);
         _tray.OpenWindowsProvider = GetHideableWindows;
 
-        _trayHideForegroundHandler = (_, _) => HideActiveWindow();
+        _trayHideForegroundHandler = (_, hwnd) =>
+        {
+            // hwnd = foreground на момент открытия меню трея (надёжнее, чем GetForegroundWindow
+            // в момент клика — клик по меню трея сам меняет активное окно).
+            if (hwnd != 0) HideWindow(hwnd); else HideActiveWindow();
+        };
         _tray.HideForegroundRequested += _trayHideForegroundHandler;
 
         _trayHideWindowHandler = (_, hwnd) => HideWindow(hwnd);
@@ -261,69 +270,37 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var orphans = _session.LoadOrphans();
         if (orphans.Count == 0) return;
 
-        var result = System.Windows.MessageBox.Show(
-            $"AnyTray обнаружил {orphans.Count} окно(окон), скрытых в прошлой сессии " +
-            "(возможно, после аварийного завершения). Восстановить их сейчас?",
-            "AnyTray — восстановление окон",
-            MessageBoxButton.YesNo, MessageBoxImage.Question);
+        // Неблокирующая стратегия: никаких модальных диалогов при старте (они мешают,
+        // а в режиме автозапуска и вовсе недопустимы). Осиротевшие окна тихо возвращаются
+        // в список скрытых — пользователь восстанавливает их вручную через трей
+        // (пункт «Восстановить все» или кликом по конкретному окну).
+        Logger.Info($"Crash-recovery: найдено осиротевших окон — {orphans.Count} (режим автозапуска: {AutostartMode}).");
 
-        if (result == MessageBoxResult.Yes)
+        foreach (var o in orphans)
         {
-            foreach (var o in orphans)
+            var info = new HiddenWindowInfo
             {
-                try
-                {
-                    var info = new HiddenWindowInfo
-                    {
-                        Hwnd = (nint)o.Hwnd,
-                        ProcessId = o.ProcessId,
-                        ProcessName = o.ProcessName,
-                        Title = o.Title,
-                        OriginalPlacement = o.Placement,
-                        HiddenAtUtc = DateTime.UtcNow
-                    };
-                    _windowManager.TryRestore(info);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"Ошибка восстановления осиротевшего окна '{o.Title}'.", ex);
-                }
-            }
+                Hwnd = (nint)o.Hwnd,
+                ProcessId = o.ProcessId,
+                ProcessName = o.ProcessName,
+                Title = o.Title,
+                OriginalPlacement = o.Placement,
+                HiddenAtUtc = DateTime.UtcNow,
+                Icon = IconHelper.GetWindowIcon((nint)o.Hwnd)
+            };
+            HiddenWindows.Add(info);
+            _watcher.Watch(info);
         }
-        else
-        {
-            // Пользователь отказался от автовосстановления — окна остаются скрытыми,
-            // но мы добавляем их в список, чтобы их можно было восстановить вручную через трей.
-            foreach (var o in orphans)
-            {
-                try
-                {
-                    var info = new HiddenWindowInfo
-                    {
-                        Hwnd = (nint)o.Hwnd,
-                        ProcessId = o.ProcessId,
-                        ProcessName = o.ProcessName,
-                        Title = o.Title,
-                        OriginalPlacement = o.Placement,
-                        HiddenAtUtc = DateTime.UtcNow
-                    };
-                    HiddenWindows.Add(info);
-                    _watcher.Watch(info);
-                }
-                catch (Exception ex)
-                {
-                    Logger.Error($"Ошибка добавления осиротевшего окна '{o.Title}' в список.", ex);
-                }
-            }
+
+        // Файл сессии отражает РЕАЛЬНОЕ состояние скрытых окон (не стираем!).
+        if (HiddenWindows.Count > 0)
             _session.Persist(HiddenWindows);
-        }
+        else
+            _session.Clear();
 
-        if (orphans.Count > 0 && result != MessageBoxResult.Yes)
-        {
-            _tray.ShowBalloon("AnyTray", $"{orphans.Count} окно(окон) осталось скрытым. Нажмите на иконку трея, чтобы восстановить.");
-        }
-
-        _session.Clear();
+        _tray.ShowBalloon("AnyTray",
+            $"{orphans.Count} окно(окон) было скрыто в прошлой сессии. " +
+            "Нажмите на иконку трея → «Восстановить все», чтобы их показать.");
     }
 
     /// <summary>Безопасное завершение: восстановить ВСЕ скрытые окна (вызывается при выходе).</summary>

@@ -110,6 +110,7 @@ public sealed class ProcessWatcher : IProcessWatcher
         _timer.Stop();
         foreach (var p in _processes.Values)
         {
+            try { p.EnableRaisingEvents = false; } catch { }
             try { p.Dispose(); } catch { }
         }
         _processes.Clear();

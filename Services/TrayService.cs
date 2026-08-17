@@ -23,7 +23,8 @@ public interface ITrayService : IDisposable
     event EventHandler? RestoreAllRequested;
     event EventHandler? SettingsRequested;
     event EventHandler? ExitRequested;
-    event EventHandler? HideForegroundRequested;
+    /// <summary>Запрос скрыть ранее активное окно. hwnd = foreground на момент открытия меню.</summary>
+    event EventHandler<nint>? HideForegroundRequested;
     /// <summary>Запрос скрыть конкретное окно (выбранное из списка открытых). hwnd окна.</summary>
     event EventHandler<nint>? HideWindowRequested;
 }
@@ -37,6 +38,7 @@ public sealed class TrayService : ITrayService
     private NotifyIcon? _notifyIcon;
     private ObservableCollection<HiddenWindowInfo>? _hidden;
     private DispatcherTimer? _menuRebuildTimer;
+    private nint _foregroundAtOpen; // foreground на момент открытия меню (для «Скрыть активное окно»)
     private bool _disposed;
 
     public Func<IReadOnlyList<OpenWindowInfo>>? OpenWindowsProvider { get; set; }
@@ -45,7 +47,8 @@ public sealed class TrayService : ITrayService
     public event EventHandler? RestoreAllRequested;
     public event EventHandler? SettingsRequested;
     public event EventHandler? ExitRequested;
-    public event EventHandler? HideForegroundRequested;
+    /// <summary>hwnd = foreground на момент открытия меню трея.</summary>
+    public event EventHandler<nint>? HideForegroundRequested;
     public event EventHandler<nint>? HideWindowRequested;
 
     public void Initialize(ObservableCollection<HiddenWindowInfo> hidden)
@@ -69,7 +72,7 @@ public sealed class TrayService : ITrayService
         var logo = LoadLogoIcon();
         var fallback = CreateFallbackIcon();
         _notifyIcon.Icon = logo ?? fallback;
-        Logger.Info($"Tray иконка: {(logo is not null ? "logo (AnyTray.ico)" : "fallback (generated)")}.");
+        Logger.Info($"Tray иконка: {(logo is not null ? "logo (anytray.ico)" : "fallback (generated)")}.");
 
         _notifyIcon.MouseDoubleClick += (_, e) =>
         {
@@ -77,10 +80,17 @@ public sealed class TrayService : ITrayService
                 SettingsRequested?.Invoke(this, EventArgs.Empty);
         };
 
-        Logger.Info("TrayService инициализирован.");
+        // Захватываем активное окно ДО того, как контекстное меню заберёт фокус.
+        // На правом клике по иконке трея foreground ещё принадлежит приложению пользователя —
+        // меню появляется только на отпускании кнопки. В момент Opening/Opened фокус уже в меню,
+        // и GetForegroundWindow() вернул бы не то окно.
+        _notifyIcon.MouseDown += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right)
+                _foregroundAtOpen = Native.NativeMethods.GetForegroundWindow();
+        };
 
-        // Тестовый balloon — если он появится, значит иконка создана (возможно, скрыта в overflow).
-        _notifyIcon.ShowBalloonTip(5000, "AnyTray", "Иконка в трее активна. Если вы это видите — всё работает!", ToolTipIcon.Info);
+        Logger.Info("TrayService инициализирован.");
     }
 
     private void OnHiddenChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -94,12 +104,17 @@ public sealed class TrayService : ITrayService
 
     private void RebuildMenu()
     {
-        if (_notifyIcon is not null && _hidden is not null)
-        {
-            _notifyIcon.ContextMenuStrip = BuildMenu();
-            int count = _hidden.Count;
-            _notifyIcon.Text = count == 0 ? "AnyTray" : $"AnyTray — скрыто окон: {count}";
-        }
+        if (_notifyIcon is null || _hidden is null) return;
+
+        // Заменяем меню и диспозим старое вместе с его пунктами и иконками —
+        // иначе при каждом hide/restore копятся GDI-хэндлы (утечка).
+        var old = _notifyIcon.ContextMenuStrip;
+        _notifyIcon.ContextMenuStrip = BuildMenu();
+        // Не диспозим, пока меню показано (DropDown открыт) — иначе сломаем активный показ.
+        if (old is not null && !old.Visible) old.Dispose();
+
+        int count = _hidden.Count;
+        _notifyIcon.Text = count == 0 ? "AnyTray" : $"AnyTray — скрыто окон: {count}";
     }
 
     private ContextMenuStrip BuildMenu()
@@ -107,7 +122,7 @@ public sealed class TrayService : ITrayService
         var menu = new ContextMenuStrip();
 
         var hideActiveItem = new ToolStripMenuItem("Скрыть активное окно");
-        hideActiveItem.Click += (_, _) => HideForegroundRequested?.Invoke(this, EventArgs.Empty);
+        hideActiveItem.Click += (_, _) => HideForegroundRequested?.Invoke(this, _foregroundAtOpen);
         menu.Items.Add(hideActiveItem);
 
         var hideMenu = new ToolStripMenuItem("Скрыть окно");
@@ -188,19 +203,25 @@ public sealed class TrayService : ITrayService
     }
 
     /// <summary>
-    /// Грузит фирменный логотип из встроенного ресурса как нативную System.Drawing.Icon.
-    /// Копирует stream в MemoryStream, чтобы Icon не зависел от жизни оригинального ресурса.
+    /// Грузит мультиразмерную ICO из встроенного ресурса.
+    /// ICO содержит кадры 16×16, 24×24, 32×32, 48×48, 64×64, 128×128 и 256×256;
+    /// Windows/NotifyIcon сам выбирает наиболее подходящий размер, что даёт чёткую
+    /// картинку в системном трее без артефактов масштабирования.
     /// </summary>
     private static System.Drawing.Icon? LoadLogoIcon()
     {
         try
         {
-            var info = System.Windows.Application.GetResourceStream(new Uri("pack://application:,,,/Assets/anytray.ico"));
+            var info = System.Windows.Application.GetResourceStream(
+                new Uri("pack://application:,,,/Assets/anytray.ico"));
             if (info?.Stream is null) return null;
+
             using var src = info.Stream;
             using var ms = new MemoryStream();
             src.CopyTo(ms);
             ms.Position = 0;
+
+            // new Icon(stream) загружает все размеры из ICO.
             return new System.Drawing.Icon(ms);
         }
         catch (Exception ex)
@@ -258,7 +279,17 @@ public sealed class TrayService : ITrayService
                 encoder.Frames.Add(BitmapFrame.Create(bmp));
                 encoder.Save(ms);
                 ms.Position = 0;
-                return System.Drawing.Image.FromStream(ms);
+
+                // Image.FromStream требует, чтобы поток оставался открытым всё время жизни
+                // изображения. Поэтому декодируем исходник и копируем в независимый Bitmap —
+                // поток и исходное изображение можно безопасно диспозить.
+                using var src = System.Drawing.Image.FromStream(ms);
+                var copy = new System.Drawing.Bitmap(src.Width, src.Height, src.PixelFormat);
+                using (var g = System.Drawing.Graphics.FromImage(copy))
+                {
+                    g.DrawImage(src, 0, 0, src.Width, src.Height);
+                }
+                return copy;
             }
         }
         catch (Exception ex)

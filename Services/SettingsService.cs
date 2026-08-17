@@ -54,6 +54,7 @@ public sealed class SettingsService : ISettingsService
                 var loaded = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
                 if (loaded is not null)
                 {
+                    loaded.Migrate(); // привести к актуальной схеме (точка расширения на будущее)
                     Current = loaded;
                     return Current;
                 }
@@ -62,6 +63,9 @@ public sealed class SettingsService : ISettingsService
         catch (Exception ex)
         {
             Logger.Error("Не удалось прочитать settings.json — используются значения по умолчанию.", ex);
+            // Сохраним повреждённый файл, чтобы пользователь/разработчик могли его разобрать —
+            // иначе следующий Save из UI молча сотрёт его.
+            BackupCorruptSettings();
         }
 
         Current = new AppSettings();
@@ -95,5 +99,24 @@ public sealed class SettingsService : ISettingsService
 
         if (success)
             SettingsChanged?.Invoke(this, settings);
+    }
+
+    /// <summary>
+    /// Копирует повреждённый settings.json в settings.json.corrupt-<timestamp>, чтобы данные
+    /// пользователя не потерялись безследно при следующем Save.
+    /// </summary>
+    private void BackupCorruptSettings()
+    {
+        try
+        {
+            if (!File.Exists(SettingsFilePath)) return;
+            var bak = Path.Combine(_dir, $"settings.json.corrupt-{DateTime.Now:yyyyMMdd-HHmmss}");
+            File.Copy(SettingsFilePath, bak, overwrite: false);
+            Logger.Warn($"Повреждённый settings.json сохранён как: {bak}");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error("Не удалось сохранить резервную копию повреждённого settings.json.", ex);
+        }
     }
 }
